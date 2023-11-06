@@ -4,9 +4,7 @@ name: CMake on a single platform
 
 on:
   push:
-    branches: [ "dev" ]
-  pull_request:
-    branches: [ "dev" ]
+    branches: [ "kihea-patch-1" ]
 
 env:
   # Customize the CMake build type here (Release, Debug, RelWithDebInfo, etc.)
@@ -36,3 +34,6 @@ jobs:
       # Build your program with the given configuration
       run: cmake --build build
     - uses: stefanzweifel/git-auto-commit-action@v5
+      with:
+        commit_message: Test Deployment
+        status_options: '-u'
