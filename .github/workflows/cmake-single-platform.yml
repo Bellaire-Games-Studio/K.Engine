@@ -24,6 +24,7 @@ jobs:
     - uses: mymindstorm/setup-emsdk@v12
     - name: Verify
       run: emcc -v
+    - run: cd {{ github.workspace }}
     - run: mkdir build
     - run: cd build
     - name: Configure CMake
