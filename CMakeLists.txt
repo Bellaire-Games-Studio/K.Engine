@@ -135,7 +135,7 @@ if (EMSCRIPTEN)
             ${OutputExecutable}
             PRIVATE
             -O2
-            --shell-file ${CMAKE_CURRENT_SOURCE_DIR}/build/editor.html
+            --shell-file ${CMAKE_CURRENT_SOURCE_DIR}/editor.html
             -sALLOW_MEMORY_GROWTH=1
             -sMAX_WEBGL_VERSION=2
             -sMIN_WEBGL_VERSION=2
@@ -149,7 +149,7 @@ if (EMSCRIPTEN)
             ${OutputExecutable}
             PRIVATE
             -O2
-            --shell-file ${CMAKE_CURRENT_SOURCE_DIR}/build/editor.html
+            --shell-file ${CMAKE_CURRENT_SOURCE_DIR}/editor.html
             -sALLOW_MEMORY_GROWTH=1
             -sMAX_WEBGL_VERSION=2
             -sMIN_WEBGL_VERSION=2
