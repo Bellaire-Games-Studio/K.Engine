@@ -25,9 +25,8 @@ jobs:
       uses: crazy-max/ghaction-chocolatey@v3.0.0
       with:
         args: -h
-    - run: choco install emscripten
     - name: Install Emscripten
-      run: choco install emscripten
+      run: C:/ProgramData/Chocolatey/bin/choco.exe install emscripten --no-progress --allow-unofficial
     - run: cd build
     - name: Configure CMake
       # Configure CMake in a 'build' subdirectory. `CMAKE_BUILD_TYPE` is only required if you are using a single-configuration generator such as make.
