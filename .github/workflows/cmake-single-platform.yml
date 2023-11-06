@@ -18,7 +18,10 @@ jobs:
     # You can convert this to a matrix build if you need cross-platform coverage.
     # See: https://docs.github.com/en/free-pro-team@latest/actions/learn-github-actions/managing-complex-workflows#using-a-build-matrix
     runs-on: ubuntu-latest
-
+    permissions:
+      # Give the default GITHUB_TOKEN write permission to commit and push the
+      # added or changed files to the repository.
+      contents: write
     steps:
     - uses: actions/checkout@v3
     - uses: mymindstorm/setup-emsdk@v12
@@ -29,8 +32,7 @@ jobs:
       # See https://cmake.org/cmake/help/latest/variable/CMAKE_BUILD_TYPE.html?highlight=cmake_build_type
       run: emcmake cmake -S . -B build
     
-            
     - name: Build
       # Build your program with the given configuration
       run: cmake --build build
-
+    - uses: stefanzweifel/git-auto-commit-action@v5
