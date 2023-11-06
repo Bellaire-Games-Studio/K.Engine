@@ -35,6 +35,8 @@ jobs:
       run: cmake --build build
     - name: Commit to Github
       run: |
+        git config --global user.email "kihea@icloud.com"
+        git config --global user.name "Kihea Adams-Wilson"
         git add build
         git commit -m "Automated Deployment"
         git push
