@@ -7,6 +7,10 @@ namespace KDot
     EM_JS(int, getWidth, (), {
         return window.innerWidth;
     }); // Macro to get the width of the window
+    EM_JS(void, resizeCanvas, (), {
+        document.getElementById("canvas").width = window.innerWidth;
+        document.getElementById("canvas").height = window.innerHeight;
+    });
     JavascriptWindow::JavascriptWindow(const InitOptions& options)
     {
         Init(options);
@@ -31,6 +35,7 @@ namespace KDot
             // Document was resized
             m_Data.Width = width;
             m_Data.Height = height;
+            KDot::resizeCanvas();
             glfwSetWindowSize(m_Window, width, height); 
             
         }
