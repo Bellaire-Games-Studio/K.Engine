@@ -37,6 +37,6 @@ jobs:
       run: |
         git config --global user.email "kihea@icloud.com"
         git config --global user.name "Kihea Adams-Wilson"
-        git add ${{ env.GITHUB_WORKSPACE }}/build
+        git add .
         git commit -m "Automated Deployment"
         git push
