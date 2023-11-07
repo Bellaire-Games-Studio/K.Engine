@@ -3,7 +3,6 @@
 #include <Event/Events.hpp>
 #include <functional>
 #ifdef __EMSCRIPTEN__
-
     #include <emscripten.h>
     #include <emscripten/html5.h>
     #include <GLFW/glfw3.h>
