@@ -1,4 +1,0 @@
-/home/runner/work/K.Engine/K.Engine/build/CMakeFiles/K.Engine.dir
-/home/runner/work/K.Engine/K.Engine/build/CMakeFiles/copy_data.dir
-/home/runner/work/K.Engine/K.Engine/build/CMakeFiles/edit_cache.dir
-/home/runner/work/K.Engine/K.Engine/build/CMakeFiles/rebuild_cache.dir
