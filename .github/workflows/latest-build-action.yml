@@ -10,9 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v3
-    - uses: JesseTG/rm@v1.0.3
-      with:
-        path: /build
+    - run: rm -r ./build
   build:
     runs-on: ubuntu-latest
     permissions:
