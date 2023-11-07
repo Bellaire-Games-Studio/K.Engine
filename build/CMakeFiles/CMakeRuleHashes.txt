@@ -1,5 +1,0 @@
-# Hashes of file build rules.
-ed48a54d245c8d291f14c093686422d0 CMakeFiles/copy_data
-f65cc312820a6da551cdfe47d51ac8f1 bin/Assets/Fonts/PTSans-Regular.ttf
-b796473d03f48db74e979ccf1b85f9a9 bin/Assets/Shaders/2D/FragmentShader.glsl
-9b3447e432df1a4fefa71d85aa3380f4 bin/Assets/Shaders/2D/VertexShader.glsl
