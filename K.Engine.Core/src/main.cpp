@@ -129,7 +129,7 @@ namespace KDot
                     ImGui::DockBuilderSetNodePos(dockspace_id, viewport->Pos);
                     ImGui::DockBuilderSetNodeSize(dockspace_id, viewport->Size);
                 
-                    auto dock_id_left = ImGui::DockBuilderSplitNode(dockspace_id, ImGuiDir_Left, 0.8f, nullptr, &dockspace_id);
+                    auto dock_id_left = ImGui::DockBuilderSplitNode(dockspace_id, ImGuiDir_None, 0.8f, nullptr, &dockspace_id);
                 
 
                     ImGui::DockBuilderDockWindow("Viewport", dock_id_left);
