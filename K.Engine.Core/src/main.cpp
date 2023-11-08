@@ -41,7 +41,7 @@ namespace KDot
             // Delta time is the time between frames in milliseconds
             if (resize)
             {
-                m_Renderer.RescaleFrameBuffer(viewportSize.x, viewportSize.y);
+                // m_Renderer.RescaleFrameBuffer(viewportSize.x, viewportSize.y);
                 resize = false;
             }
             cumulatedTime += deltaTime;
@@ -58,6 +58,7 @@ namespace KDot
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
             m_Camera.Update(deltaTime);
             m_Renderer.BeginStream(m_Camera);
+            // Render gizmos
             Draw(deltaTime);
             m_Renderer.EndStream();
 
@@ -111,6 +112,7 @@ namespace KDot
             if (dockspace_flags & ImGuiDockNodeFlags_PassthruCentralNode)
                 window_flags |= ImGuiWindowFlags_NoBackground;
             ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+            
             ImGui::Begin("K.Engine", nullptr, window_flags);
             ImGui::PopStyleVar();
             ImGui::PopStyleVar(2);      
@@ -129,7 +131,7 @@ namespace KDot
                     ImGui::DockBuilderSetNodePos(dockspace_id, viewport->Pos);
                     ImGui::DockBuilderSetNodeSize(dockspace_id, viewport->Size);
                 
-                    auto dock_id_left = ImGui::DockBuilderSplitNode(dockspace_id, ImGuiDir_None, 0.8f, nullptr, &dockspace_id);
+                    auto dock_id_left = ImGui::DockBuilderSplitNode(dockspace_id, ImGuiDir_Left, 0.8f, nullptr, &dockspace_id);
                 
 
                     ImGui::DockBuilderDockWindow("Viewport", dock_id_left);
