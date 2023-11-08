@@ -1,0 +1,38 @@
+# This starter workflow is for a CMake project running on a single platform. There is a different starter workflow if you need cross-platform coverage.
+# See: https://github.com/actions/starter-workflows/blob/main/ci/cmake-multi-platform.yml
+name: CMake on a single platform
+
+on:
+  push:
+    branches: [ "kihea-patch-1", "dev" ]
+jobs:
+  clean:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+    - run: rm -r build
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    concurrency:
+      group: "pages"
+      cancel-in-progress: false
+    steps:
+    - uses: actions/checkout@v3
+    - uses: mymindstorm/setup-emsdk@v12
+    - name: Verify
+      run: emcc -v
+    - name: Configure CMake
+      run: emcmake cmake -S . -B build
+    - name: Build
+      # Build your program with the given configuration
+      run: cmake --build build
+    - name: Commit to Github Branch
+      uses: stefanzweifel/git-auto-commit-action@v5
+      with:
+        commit_message: Automated Deployment
+          
+
