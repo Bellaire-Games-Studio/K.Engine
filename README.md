@@ -1,6 +1,9 @@
 # K.Engine
 
-K.Engine is a simple game engine written in C++.
+K.Engine is a simple WIP game engine written in C++.
+
+You can test the current development build [here](https://bellaire-games-studio.github.io/K.Engine/build/bin/K.Engine.html)
+The build folder holds a current build of the repository
 
 ## Features
 
