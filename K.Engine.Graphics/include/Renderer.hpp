@@ -109,7 +109,7 @@ namespace KDot
         GLint u_ViewMat;
         GLint u_ModelMat;
         // Lighting / mode uniform locations (cached at compile time).
-        GLint u_Unlit = -1;
+        GLint u_ShadeMode = -1; // 0=lit vertex colour, 1=procedural terrain, 2=unlit 2D
         GLint u_CameraPos = -1;
         GLint u_AmbientColor = -1;
         GLint u_AmbientIntensity = -1;
@@ -120,7 +120,7 @@ namespace KDot
         GLint u_FogColor = -1;
         GLint u_FogDensity = -1;
         glm::mat4 m_ActiveProjection = glm::mat4(1.0f);
-        int       m_UnlitMode = 0;
+        int       m_ShadeMode = 0;
         glm::vec3 m_CameraWorldPos = glm::vec3(0.0f);
         GLuint m_ShaderProgram;
         GLuint m_FrameBuffer;

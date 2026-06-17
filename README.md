@@ -15,11 +15,11 @@ The build folder holds a current build of the repository.
 - [X] Lighting (ambient + directional sun + point lights, Blinn-Phong, fog)
 - [X] Mouse input + screen-ray picking (click-to-sculpt, look/zoom)
 - [X] Procedural Terrain (chunked, LOD, runtime sculpting)
+- [X] GPU procedural terrain texturing (height/slope material splatting)
+- [X] GPU-instanced grass (wind-animated, density from the fidelity dial)
 - [X] Physics (rigidbody, AABB/sphere, raycasts, terrain collision)
 - [X] Entity Component System
 - [X] Adjustable fidelity / LOD ("0.65" dial)
-- [ ] Grass / vegetation *(next)*
-- [ ] Texture splatting *(next)*
 - [ ] Audio
 - [ ] Animation
 - [X] Online/In-browser (Emscripten / WebGL2)
@@ -81,6 +81,14 @@ budget and texture sampling, so a settings menu only ever touches one call.
   nearest few, capped by the fidelity dial) with Blinn-Phong specular and
   exp2 distance fog. Lights live in `LightManager` (plain data) and are turned
   into shader uniforms by the renderer.
+- **Procedural terrain texturing (GPU)**: terrain is shaded in the fragment
+  shader from world height + slope, blending sand/grass/rock/snow and broken up
+  with GPU value-noise detail — no texture assets required, all per-pixel work
+  on the GPU.
+- **GPU-instanced grass**: the CPU scatters blade instances once (`GrassField`,
+  density + view distance from the fidelity dial, skipping water/steep/rock);
+  the GPU draws them in **one instanced call**, doing the billboarding, taper,
+  wind sway and distance fade in the vertex shader.
 - **2D pass**: `Renderer::Begin2D/End2D` switch to an orthographic, unlit,
   alpha-blended mode for HUD/sprites (the demo draws a crosshair, status bars,
   and a cursor brush marker).

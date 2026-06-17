@@ -218,6 +218,8 @@ namespace KDot
             InitMeshBuffers();
 
         ApplyFrameUniforms(); // uses the active projection set by BeginStream
+        if (u_ShadeMode >= 0)
+            glUniform1i(u_ShadeMode, 1); // world meshes use procedural terrain shading
 
         glBindVertexArray(m_MeshVAO);
         glBindBuffer(GL_ARRAY_BUFFER, m_MeshVBO);
@@ -252,8 +254,8 @@ namespace KDot
         glUseProgram(m_ShaderProgram);
         glUniformMatrix4fv(u_ProjectionMat, 1, GL_FALSE, &m_ActiveProjection[0][0]);
         glUniformMatrix4fv(u_ViewMat, 1, GL_FALSE, &viewMatrix[0][0]);
-        if (u_Unlit >= 0)
-            glUniform1i(u_Unlit, m_UnlitMode);
+        if (u_ShadeMode >= 0)
+            glUniform1i(u_ShadeMode, m_ShadeMode);
         if (u_CameraPos >= 0)
             glUniform3fv(u_CameraPos, 1, &m_CameraWorldPos[0]);
     }
@@ -336,7 +338,7 @@ namespace KDot
         AddVertexBuffer();
         u_ProjectionMat = glGetUniformLocation(m_ShaderProgram, "projection");
         u_ViewMat = glGetUniformLocation(m_ShaderProgram, "view");
-        u_Unlit = glGetUniformLocation(m_ShaderProgram, "uUnlit");
+        u_ShadeMode = glGetUniformLocation(m_ShaderProgram, "uShadeMode");
         u_CameraPos = glGetUniformLocation(m_ShaderProgram, "uCameraPos");
         u_AmbientColor = glGetUniformLocation(m_ShaderProgram, "uAmbientColor");
         u_AmbientIntensity = glGetUniformLocation(m_ShaderProgram, "uAmbientIntensity");
@@ -455,7 +457,7 @@ namespace KDot
         viewMatrix = camera.GetViewMatrix();
         cameraZoom = camera.getZoom();
         m_CameraWorldPos = camera.m_Position;
-        m_UnlitMode = 0;
+        m_ShadeMode = 0;
         // Far plane follows the fidelity dial so distant terrain isn't clipped.
         m_ActiveProjection = glm::perspective(glm::radians(cameraZoom), 16.0f / 9.0f, 0.1f,
                                               QualitySettings::Get().renderDistance);
@@ -471,7 +473,7 @@ namespace KDot
         // Top-left origin orthographic projection in pixels; identity view.
         m_ActiveProjection = glm::ortho(0.0f, width, height, 0.0f, -1.0f, 1.0f);
         viewMatrix = glm::mat4(1.0f);
-        m_UnlitMode = 1;
+        m_ShadeMode = 2; // unlit
         glDisable(GL_DEPTH_TEST);
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -482,7 +484,7 @@ namespace KDot
         Flush();
         glDisable(GL_BLEND);
         glEnable(GL_DEPTH_TEST);
-        m_UnlitMode = 0;
+        m_ShadeMode = 0;
     }
     void Renderer::SetLights(const LightManager& lights, const glm::vec3& cameraPos)
     {

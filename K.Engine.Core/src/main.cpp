@@ -3,8 +3,10 @@
 #include "imgui.h"
 #include "imgui_internal.h"
 #include "Renderer.hpp"
+#include "GrassRenderer.hpp"
 
 #include <Terrain.hpp>
+#include <GrassField.hpp>
 #include <PhysicsWorld.hpp>
 #include <Light.hpp>
 #include <Input.hpp>
@@ -21,10 +23,9 @@ namespace KDot
     // -------------------------------------------------------------------------
     // WorldLayer
     //
-    //  Demo: procedurally generated LOD terrain lit by a sun + point lights,
-    //  a physics body that settles on the surface (ECS + PhysicsWorld), a
-    //  mouse-driven fly camera, click-to-sculpt via screen-ray picking, and a
-    //  2D HUD drawn with the renderer's orthographic pass.
+    //  Demo: procedurally generated LOD terrain with GPU procedural texturing,
+    //  GPU-instanced wind-animated grass, sun + point lights, a physics body
+    //  that settles on the surface, mouse-driven camera, and click-to-sculpt.
     //
     //  Controls: WASD fly · right-drag look · scroll zoom ·
     //            left-click sculpt (hold Shift to lower) · R re-drop the ball
@@ -32,14 +33,19 @@ namespace KDot
     class WorldLayer : public Layer
     {
         Renderer      m_Renderer;
+        GrassRenderer m_Grass;
         Camera        m_Camera;
         Terrain       m_Terrain;
+        GrassField    m_GrassField;
         PhysicsWorld  m_Physics;
         LightManager  m_Lights;
         ecs::Registry m_Registry;
         ecs::Entity   m_Ball = ecs::kNull;
 
-        bool   first = true;
+        bool  first = true;
+        bool  m_GrassReady = false;
+        bool  m_ShowGrass = true;
+        float m_Time = 0.0f;
 
         // Editor / interaction state
         float m_Fidelity      = 0.65f;
@@ -47,7 +53,6 @@ namespace KDot
         float m_BrushStrength = 18.0f;
         int   m_Seed          = 1337;
 
-        // Mouse / viewport state (viewport rect captured during Render()).
         glm::vec2 m_LastMouse{0.0f, 0.0f};
         bool      m_Looking = false;
         bool      m_ViewportHovered = false;
@@ -63,7 +68,8 @@ namespace KDot
             m_Renderer.GenerateFrameBuffer();
 
             QualitySettings::Get().SetFidelity(m_Fidelity);
-            RegenerateTerrain();
+            m_GrassReady = m_Grass.Init();
+            RegenerateTerrain(); // also scatters grass
 
             m_Physics.sampleTerrainHeight = [this](float x, float z) { return m_Terrain.HeightAt(x, z); };
             m_Physics.sampleTerrainNormal = [this](float x, float z) { return m_Terrain.NormalAt(x, z); };
@@ -71,8 +77,6 @@ namespace KDot
             m_Camera = Camera(glm::vec3(0.0f, 140.0f, 280.0f), glm::vec3(0.0f, 1.0f, 0.0f), -90.0f, -22.0f);
             m_Camera.SetMovementSpeed(0.12f);
 
-            // Lighting: a warm sun, soft sky ambient, distance fog, and two point
-            // lights (one follows the ball, one is a static cyan marker).
             m_Lights.ambient.color = glm::vec3(0.55f, 0.65f, 0.85f);
             m_Lights.ambient.intensity = 0.28f;
             m_Lights.sun.direction = glm::normalize(glm::vec3(-0.40f, -0.82f, -0.45f));
@@ -87,6 +91,12 @@ namespace KDot
         }
 
         ~WorldLayer() {}
+
+        glm::mat4 Projection()
+        {
+            return glm::perspective(glm::radians(m_Camera.getZoom()), kFbW / kFbH, 0.1f,
+                                    QualitySettings::Get().renderDistance);
+        }
 
         void RegenerateTerrain()
         {
@@ -108,6 +118,24 @@ namespace KDot
             cfg.origin = glm::vec3(-spanX * 0.5f, 0.0f, -spanZ * 0.5f);
 
             m_Terrain.Generate(cfg);
+            RegenerateGrass();
+        }
+
+        void RegenerateGrass()
+        {
+            const float fid = QualitySettings::Get().Fidelity();
+
+            GrassParams gp;
+            gp.density   = 0.05f + fid * 0.45f;                       // 0.05 .. 0.5 blades / m^2
+            gp.maxBlades = static_cast<int>(8000.0f + fid * 112000.0f); // 8k .. 120k
+            gp.minHeight = 1.5f;
+            gp.maxHeight = 62.0f;
+            gp.slopeThreshold = 0.74f;
+            gp.seed = static_cast<std::uint32_t>(m_Seed);
+
+            m_GrassField.Generate(m_Terrain.Field(), gp);
+            m_Grass.SetInstances(m_GrassField.Instances());
+            m_Grass.maxDistance = 120.0f + fid * 380.0f; // grass view distance scales with fidelity
         }
 
         void SpawnBall()
@@ -125,14 +153,9 @@ namespace KDot
             m_Registry.Emplace<Collider>(m_Ball, Collider::MakeSphere(3.0f));
         }
 
-        // Cursor pick against the terrain/colliders, using the viewport NDC
-        // captured during Render(). Returns whether anything was hit.
         bool PickWorld(RaycastHit& outHit)
         {
-            const float fov = m_Camera.getZoom();
-            const glm::mat4 proj = glm::perspective(glm::radians(fov), kFbW / kFbH, 0.1f,
-                                                    QualitySettings::Get().renderDistance);
-            const Picking::PickRay pr = Picking::ScreenToRay(m_ViewportNDC, m_Camera.GetViewMatrix(), proj);
+            const Picking::PickRay pr = Picking::ScreenToRay(m_ViewportNDC, m_Camera.GetViewMatrix(), Projection());
             Ray ray{pr.origin, pr.direction};
             outHit = m_Physics.Raycast(m_Registry, ray, 6000.0f);
             return outHit.hit;
@@ -142,6 +165,7 @@ namespace KDot
         {
             float dt = static_cast<float>(deltaTime) / 1000.0f; // ms -> seconds
             dt = std::min(dt, 0.033f);
+            m_Time += dt;
 
             // --- Mouse look (right-drag) ---
             auto mp = Input::GetMousePosition();
@@ -168,7 +192,6 @@ namespace KDot
                 }
             }
 
-            // --- Make the first point light follow the ball ---
             if (!m_Lights.points.empty())
             {
                 if (Transform* t = m_Registry.TryGet<Transform>(m_Ball))
@@ -196,29 +219,28 @@ namespace KDot
 
             m_Renderer.EndStream();
 
+            // GPU-instanced grass (single draw call), depth-tested against terrain.
+            if (m_ShowGrass && m_GrassReady)
+                m_Grass.Render(m_Camera.GetViewMatrix(), Projection(), m_Camera.m_Position, m_Time, m_Lights);
+
             DrawHUD();
 
             m_Renderer.UnbindFrameBuffer();
         }
 
-        // 2D overlay drawn with the renderer's orthographic pass.
         void DrawHUD()
         {
             m_Renderer.Begin2D(kFbW, kFbH);
 
             const glm::vec4 white(1.0f, 1.0f, 1.0f, 0.85f);
-
-            // Center crosshair.
             m_Renderer.DrawQuad(glm::vec3(kFbW * 0.5f, kFbH * 0.5f, 0.0f), glm::vec2(44.0f, 4.0f), white);
             m_Renderer.DrawQuad(glm::vec3(kFbW * 0.5f, kFbH * 0.5f, 0.0f), glm::vec2(4.0f, 44.0f), white);
 
-            // Corner status bars (demonstrates alpha-blended 2D sprites).
             m_Renderer.DrawQuad(glm::vec3(180.0f, 90.0f, 0.0f),  glm::vec2(320.0f, 40.0f), glm::vec4(0.0f, 0.0f, 0.0f, 0.4f));
             m_Renderer.DrawQuad(glm::vec3(180.0f, 90.0f, 0.0f),  glm::vec2(300.0f, 22.0f), glm::vec4(0.85f, 0.25f, 0.22f, 0.9f));
             m_Renderer.DrawQuad(glm::vec3(180.0f, 140.0f, 0.0f), glm::vec2(320.0f, 40.0f), glm::vec4(0.0f, 0.0f, 0.0f, 0.4f));
             m_Renderer.DrawQuad(glm::vec3(180.0f, 140.0f, 0.0f), glm::vec2(220.0f, 22.0f), glm::vec4(0.25f, 0.55f, 0.95f, 0.9f));
 
-            // Cursor brush marker (when hovering the viewport).
             if (m_ViewportHovered)
             {
                 const float px = (m_ViewportNDC.x * 0.5f + 0.5f) * kFbW;
@@ -320,6 +342,11 @@ namespace KDot
             ImGui::InputInt("Seed", &m_Seed);
             if (ImGui::Button("Regenerate"))
                 RegenerateTerrain();
+
+            ImGui::Separator();
+            ImGui::Checkbox("Grass", &m_ShowGrass);
+            ImGui::SameLine();
+            ImGui::Text("%d blades (1 draw call)", m_Grass.InstanceCount());
 
             ImGui::Separator();
             ImGui::TextUnformatted("Lighting");
