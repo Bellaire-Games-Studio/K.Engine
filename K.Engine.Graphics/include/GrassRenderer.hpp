@@ -1,23 +1,23 @@
 #pragma once
-#include <string>
 #include <vector>
+#include <memory>
 #include <glm.hpp>
 #include <gtc/matrix_transform.hpp>
 #include <Core/GrassInstance.hpp>
 #include <Light.hpp>
-#include <Platform/GL.hpp>
+#include <RHI/Device.hpp>
 
 namespace KDot
 {
-    // GPU-instanced grass. The CPU uploads one blade mesh + a per-blade instance
-    // buffer once; every frame is a single glDrawArraysInstanced call, with the
-    // vertex shader doing the billboarding, taper, wind and distance fade. This
-    // keeps the per-frame CPU cost flat regardless of blade count.
+    // GPU-instanced grass, now expressed entirely through the RHI (no direct GL):
+    // one blade vertex buffer + a per-blade instance buffer + a constants UBO,
+    // drawn in a single instanced call. Swapping the RHI backend (GL -> Vulkan)
+    // renders the same grass with no changes here.
     class GrassRenderer
     {
     public:
         GrassRenderer() = default;
-        ~GrassRenderer();
+        ~GrassRenderer() = default;
 
         bool Init();
         void SetInstances(const std::vector<GrassInstance>& instances);
@@ -28,19 +28,14 @@ namespace KDot
 
         float bladeWidth  = 0.16f;
         float bladeHeight = 1.6f;
-        float maxDistance = 320.0f; // blades fade out past here
+        float maxDistance = 320.0f;
 
     private:
-        GLuint CompileShader(const std::string& path, GLenum type);
-
-        GLuint m_Program = 0;
-        GLuint m_VAO = 0;
-        GLuint m_BladeVBO = 0;
-        GLuint m_InstanceVBO = 0;
-        int    m_Count = 0;
-
-        GLint u_proj = -1, u_view = -1, u_cam = -1, u_time = -1;
-        GLint u_bw = -1, u_bh = -1, u_maxd = -1;
-        GLint u_ambC = -1, u_ambI = -1, u_sunD = -1, u_sunC = -1, u_sunI = -1, u_fogC = -1, u_fogD = -1;
+        std::unique_ptr<rhi::Device>   m_Device;
+        std::unique_ptr<rhi::Buffer>   m_BladeBuf;
+        std::unique_ptr<rhi::Buffer>   m_InstanceBuf;
+        std::unique_ptr<rhi::Buffer>   m_Ubo;
+        std::unique_ptr<rhi::Pipeline> m_Pipeline;
+        int m_Count = 0;
     };
 }

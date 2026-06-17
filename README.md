@@ -116,11 +116,15 @@ The engine now builds on both the web (Emscripten/WebGL2) and **native desktop**
 
 The gameplay systems (terrain, physics, ECS, config, math) are graphics-API
 agnostic, so the remaining work is backend-only, behind the RHI seam
-(`RHI/GraphicsAPI.hpp`, selected via the `KE_BACKEND_*` CMake options):
+(`RHI/` — `Device`/`Buffer`/`Pipeline` interfaces + `GraphicsAPI.hpp`, selected
+via the `KE_BACKEND_*` CMake options):
 
 1. ✅ Native desktop OpenGL (window/loop/RHI seam, shader adaptation).
-2. **WebGPU** (Dawn on desktop / browser WebGPU on web) — portable, modern.
-3. **Vulkan** — native high-performance desktop path.
+2. ✅ RHI device abstraction + OpenGL backend (`RHI/GLDevice`); `GrassRenderer`
+   ported onto it (buffers + pipeline + std140 uniform buffer, zero direct GL).
+3. **Vulkan** — implement `rhi::Device` for Vulkan; port the remaining renderer.
+   Native high-performance desktop path.
+4. **WebGPU** — implement `rhi::Device` for WebGPU; move the web target onto it.
 
 ## Building (web)
 
