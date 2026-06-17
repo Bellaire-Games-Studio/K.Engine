@@ -12,9 +12,14 @@
 #include <Input.hpp>
 #include <EntitityComponentSystem/ECS.hpp>
 #include <Core/Transform.hpp>
+#include <Core/SceneComponents.hpp>
 #include <Core/QualitySettings.hpp>
 #include <Core/Picking.hpp>
+#include <gtc/quaternion.hpp>
 #include <algorithm>
+#include <cstring>
+#include <string>
+#include <vector>
 
 using namespace std;
 
@@ -23,12 +28,14 @@ namespace KDot
     // -------------------------------------------------------------------------
     // WorldLayer
     //
-    //  Demo: procedurally generated LOD terrain with GPU procedural texturing,
-    //  GPU-instanced wind-animated grass, sun + point lights, a physics body
-    //  that settles on the surface, mouse-driven camera, and click-to-sculpt.
+    //  Procedural LOD terrain + GPU grass demo, now with a small scene editor:
+    //  a World Explorer that lists every world item (ECS entity + the
+    //  environment singletons) and a Properties panel that edits the selected
+    //  item's components. Items can be spawned, duplicated, deleted, picked in
+    //  the viewport, and moved with a transform gizmo.
     //
-    //  Controls: WASD fly · right-drag look · scroll zoom ·
-    //            left-click sculpt (hold Shift to lower) · R re-drop the ball
+    //  Controls: WASD fly · right-drag look · scroll zoom · left-click =
+    //            select (Select tool) or sculpt (Sculpt tool) · R re-drop ball
     // -------------------------------------------------------------------------
     class WorldLayer : public Layer
     {
@@ -48,6 +55,17 @@ namespace KDot
         float m_Time = 0.0f;
 
         // Editor / interaction state
+        enum class Tool { Select, Sculpt };
+        enum class Sel  { None, Entity, Sun, Fog, Terrain, Grass };
+
+        Tool        m_Tool = Tool::Select;
+        Sel         m_Sel = Sel::None;
+        ecs::Entity m_SelEntity = ecs::kNull;
+        ecs::Entity m_PendingDelete = ecs::kNull;
+        bool        m_LeftPrev = false;
+        int         m_NextCube = 1;
+        int         m_NextLight = 1;
+
         float m_Fidelity      = 0.65f;
         float m_BrushRadius   = 28.0f;
         float m_BrushStrength = 18.0f;
@@ -84,10 +102,13 @@ namespace KDot
             m_Lights.sun.intensity = 1.15f;
             m_Lights.fogColor = glm::vec3(0.45f, 0.62f, 0.85f);
             m_Lights.fogDensity = 0.00075f;
-            m_Lights.points.push_back({glm::vec3(0.0f, 30.0f, 0.0f), glm::vec3(1.0f, 0.6f, 0.3f), 2.2f, 140.0f});
-            m_Lights.points.push_back({glm::vec3(160.0f, 50.0f, -160.0f), glm::vec3(0.3f, 0.7f, 1.0f), 2.0f, 220.0f});
+
+            // Point lights are now world items (entities) the explorer can edit.
+            SpawnLight(glm::vec3(0.0f, 30.0f, 0.0f),     glm::vec3(1.0f, 0.6f, 0.3f), 2.2f, 160.0f, "Warm Light");
+            SpawnLight(glm::vec3(160.0f, 50.0f, -160.0f), glm::vec3(0.3f, 0.7f, 1.0f), 2.0f, 240.0f, "Cool Light");
 
             SpawnBall();
+            Select(m_Ball);
         }
 
         ~WorldLayer() {}
@@ -126,7 +147,7 @@ namespace KDot
             const float fid = QualitySettings::Get().Fidelity();
 
             GrassParams gp;
-            gp.density   = 0.05f + fid * 0.45f;                       // 0.05 .. 0.5 blades / m^2
+            gp.density   = 0.05f + fid * 0.45f;                         // 0.05 .. 0.5 blades / m^2
             gp.maxBlades = static_cast<int>(8000.0f + fid * 112000.0f); // 8k .. 120k
             gp.minHeight = 1.5f;
             gp.maxHeight = 62.0f;
@@ -138,8 +159,90 @@ namespace KDot
             m_Grass.maxDistance = 120.0f + fid * 380.0f; // grass view distance scales with fidelity
         }
 
+        // ---- World items ----------------------------------------------------
+        void Select(ecs::Entity e)
+        {
+            m_Sel = Sel::Entity;
+            m_SelEntity = e;
+        }
+
+        // A point in front of the camera, lifted to sit just above the terrain.
+        glm::vec3 SpawnPoint(float dist)
+        {
+            glm::vec3 p = m_Camera.m_Position + m_Camera.Front() * dist;
+            const float h = m_Terrain.HeightAt(p.x, p.z) + 4.0f;
+            if (p.y < h)
+                p.y = h;
+            return p;
+        }
+
+        ecs::Entity SpawnCube()
+        {
+            ecs::Entity e = m_Registry.Create();
+            m_Registry.Emplace<Transform>(e, SpawnPoint(55.0f));
+
+            const int id = m_NextCube;
+            Prop pr;
+            pr.size = glm::vec3(6.0f);
+            pr.color = glm::vec4(0.40f + 0.55f * ((id * 37) % 100) / 100.0f,
+                                 0.40f + 0.55f * ((id * 71) % 100) / 100.0f,
+                                 0.40f + 0.55f * ((id * 53) % 100) / 100.0f, 1.0f);
+            m_Registry.Emplace<Prop>(e, pr);
+            m_Registry.Emplace<KDot::Name>(e, KDot::Name{"Cube " + std::to_string(m_NextCube++)});
+            Select(e);
+            return e;
+        }
+
+        ecs::Entity SpawnLight(const glm::vec3& pos, const glm::vec3& color, float intensity,
+                               float radius, const std::string& name)
+        {
+            ecs::Entity e = m_Registry.Create();
+            m_Registry.Emplace<Transform>(e, pos);
+            LightSource ls;
+            ls.color = color;
+            ls.intensity = intensity;
+            ls.radius = radius;
+            m_Registry.Emplace<LightSource>(e, ls);
+            m_Registry.Emplace<KDot::Name>(e, KDot::Name{name});
+            m_NextLight++;
+            return e;
+        }
+
+        ecs::Entity SpawnLight() // editor "+ Light": in front of the camera
+        {
+            return SpawnLight(SpawnPoint(45.0f) + glm::vec3(0.0f, 18.0f, 0.0f),
+                              glm::vec3(1.0f, 0.85f, 0.6f), 2.0f, 140.0f,
+                              "Light " + std::to_string(m_NextLight));
+        }
+
+        void DuplicateSelected()
+        {
+            if (m_Sel != Sel::Entity || !m_Registry.Valid(m_SelEntity))
+                return;
+            const ecs::Entity s = m_SelEntity;
+            ecs::Entity e = m_Registry.Create();
+
+            // Copy each present component through a local first (Emplace may grow
+            // the same pool the source lives in, which would dangle a direct ref).
+            if (Transform* t = m_Registry.TryGet<Transform>(s))
+            {
+                Transform nt = *t;
+                nt.position += glm::vec3(8.0f, 0.0f, 8.0f);
+                m_Registry.Emplace<Transform>(e, nt);
+            }
+            if (Prop* p = m_Registry.TryGet<Prop>(s))        { Prop c = *p;        m_Registry.Emplace<Prop>(e, c); }
+            if (LightSource* l = m_Registry.TryGet<LightSource>(s)) { LightSource c = *l; m_Registry.Emplace<LightSource>(e, c); }
+            if (Rigidbody* r = m_Registry.TryGet<Rigidbody>(s)) { Rigidbody c = *r; m_Registry.Emplace<Rigidbody>(e, c); }
+            if (Collider* col = m_Registry.TryGet<Collider>(s)) { Collider c = *col; m_Registry.Emplace<Collider>(e, c); }
+
+            std::string base = m_Registry.TryGet<KDot::Name>(s) ? m_Registry.TryGet<KDot::Name>(s)->value : "Entity";
+            m_Registry.Emplace<KDot::Name>(e, KDot::Name{base + " copy"});
+            Select(e);
+        }
+
         void SpawnBall()
         {
+            const bool reselect = (m_Sel == Sel::Entity && m_SelEntity == m_Ball);
             if (m_Registry.Valid(m_Ball))
                 m_Registry.Destroy(m_Ball);
 
@@ -151,9 +254,36 @@ namespace KDot
             rb.restitution = 0.45f;
             rb.friction = 0.4f;
             m_Registry.Emplace<Collider>(m_Ball, Collider::MakeSphere(3.0f));
+            m_Registry.Emplace<Prop>(m_Ball, Prop{glm::vec3(6.0f), glm::vec4(0.9f, 0.3f, 0.2f, 1.0f)});
+            m_Registry.Emplace<KDot::Name>(m_Ball, KDot::Name{"Physics Ball"});
+
+            if (reselect)
+                Select(m_Ball);
         }
 
-        bool PickWorld(RaycastHit& outHit)
+        // Rebuild the renderer's point-light list from LightSource entities.
+        void SyncLights()
+        {
+            m_Lights.points.clear();
+            m_Registry.View<Transform, LightSource>([&](ecs::Entity, Transform& t, LightSource& ls) {
+                m_Lights.points.push_back({t.position, ls.color, ls.intensity, ls.radius});
+            });
+        }
+
+        bool PickEntity(ecs::Entity& outEntity)
+        {
+            const Picking::PickRay pr = Picking::ScreenToRay(m_ViewportNDC, m_Camera.GetViewMatrix(), Projection());
+            Ray ray{pr.origin, pr.direction};
+            RaycastHit hit = m_Physics.Raycast(m_Registry, ray, 6000.0f);
+            if (hit.hit && hit.entity != ecs::kNull && m_Registry.Valid(hit.entity))
+            {
+                outEntity = hit.entity;
+                return true;
+            }
+            return false;
+        }
+
+        bool PickTerrain(RaycastHit& outHit)
         {
             const Picking::PickRay pr = Picking::ScreenToRay(m_ViewportNDC, m_Camera.GetViewMatrix(), Projection());
             Ray ray{pr.origin, pr.direction};
@@ -181,25 +311,37 @@ namespace KDot
 
             m_Camera.Update(deltaTime);
 
-            // --- Click to sculpt at the picked terrain point ---
-            if (m_ViewportHovered && Input::IsMouseButtonPressed(KDot::Mouse::LeftClick))
+            // --- Left mouse: select (Select tool) or sculpt (Sculpt tool) ---
+            const bool leftDown = Input::IsMouseButtonPressed(KDot::Mouse::LeftClick);
+            const bool leftClick = leftDown && !m_LeftPrev; // rising edge
+            if (m_ViewportHovered)
             {
-                RaycastHit hit;
-                if (PickWorld(hit))
+                if (m_Tool == Tool::Select && leftClick)
                 {
-                    const SculptMode mode = Input::IsKeyPressed(KDot::Key::LeftShift) ? SculptMode::Lower : SculptMode::Raise;
-                    m_Terrain.Sculpt(glm::vec2(hit.point.x, hit.point.z), m_BrushRadius, m_BrushStrength, mode, dt);
+                    ecs::Entity picked;
+                    if (PickEntity(picked))
+                        Select(picked);
+                    else
+                    {
+                        m_Sel = Sel::None;
+                        m_SelEntity = ecs::kNull;
+                    }
+                }
+                else if (m_Tool == Tool::Sculpt && leftDown)
+                {
+                    RaycastHit hit;
+                    if (PickTerrain(hit))
+                    {
+                        const SculptMode mode = Input::IsKeyPressed(KDot::Key::LeftShift) ? SculptMode::Lower : SculptMode::Raise;
+                        m_Terrain.Sculpt(glm::vec2(hit.point.x, hit.point.z), m_BrushRadius, m_BrushStrength, mode, dt);
+                    }
                 }
             }
-
-            if (!m_Lights.points.empty())
-            {
-                if (Transform* t = m_Registry.TryGet<Transform>(m_Ball))
-                    m_Lights.points[0].position = t->position + glm::vec3(0.0f, 12.0f, 0.0f);
-            }
+            m_LeftPrev = leftDown;
 
             m_Terrain.Update(m_Camera.m_Position);
             m_Physics.Step(m_Registry, dt);
+            SyncLights();
 
             // --- Render the scene into the offscreen framebuffer ---
             m_Renderer.BindFrameBuffer();
@@ -214,8 +356,7 @@ namespace KDot
             for (const TerrainChunk& chunk : m_Terrain.Chunks())
                 m_Renderer.DrawMesh(chunk.Mesh());
 
-            if (Transform* t = m_Registry.TryGet<Transform>(m_Ball))
-                m_Renderer.DrawCube(t->position, glm::vec3(6.0f), glm::vec4(0.9f, 0.3f, 0.2f, 1.0f), 0.0f);
+            DrawSceneItems();
 
             m_Renderer.EndStream();
 
@@ -228,6 +369,32 @@ namespace KDot
             m_Renderer.UnbindFrameBuffer();
         }
 
+        // Draw all renderable world items + a transform gizmo on the selection.
+        void DrawSceneItems()
+        {
+            m_Registry.View<Transform, Prop>([&](ecs::Entity, Transform& t, Prop& p) {
+                const float yaw = glm::degrees(glm::eulerAngles(t.rotation).y);
+                m_Renderer.DrawCube(t.position, p.size, p.color, yaw);
+            });
+
+            // Small emissive markers so lights are visible / locatable in the scene.
+            m_Registry.View<Transform, LightSource>([&](ecs::Entity, Transform& t, LightSource& ls) {
+                m_Renderer.DrawCube(t.position, glm::vec3(3.0f), glm::vec4(ls.color, 1.0f), 0.0f);
+            });
+
+            if (m_Sel == Sel::Entity && m_Registry.Valid(m_SelEntity))
+            {
+                if (Transform* t = m_Registry.TryGet<Transform>(m_SelEntity))
+                {
+                    const glm::vec3 o = t->position;
+                    const float L = 16.0f, w = 0.8f;
+                    m_Renderer.DrawCube(o + glm::vec3(L * 0.5f, 0, 0), glm::vec3(L, w, w), glm::vec4(1.0f, 0.25f, 0.25f, 1.0f), 0.0f);
+                    m_Renderer.DrawCube(o + glm::vec3(0, L * 0.5f, 0), glm::vec3(w, L, w), glm::vec4(0.25f, 1.0f, 0.25f, 1.0f), 0.0f);
+                    m_Renderer.DrawCube(o + glm::vec3(0, 0, L * 0.5f), glm::vec3(w, w, L), glm::vec4(0.35f, 0.45f, 1.0f, 1.0f), 0.0f);
+                }
+            }
+        }
+
         void DrawHUD()
         {
             m_Renderer.Begin2D(kFbW, kFbH);
@@ -235,11 +402,6 @@ namespace KDot
             const glm::vec4 white(1.0f, 1.0f, 1.0f, 0.85f);
             m_Renderer.DrawQuad(glm::vec3(kFbW * 0.5f, kFbH * 0.5f, 0.0f), glm::vec2(44.0f, 4.0f), white);
             m_Renderer.DrawQuad(glm::vec3(kFbW * 0.5f, kFbH * 0.5f, 0.0f), glm::vec2(4.0f, 44.0f), white);
-
-            m_Renderer.DrawQuad(glm::vec3(180.0f, 90.0f, 0.0f),  glm::vec2(320.0f, 40.0f), glm::vec4(0.0f, 0.0f, 0.0f, 0.4f));
-            m_Renderer.DrawQuad(glm::vec3(180.0f, 90.0f, 0.0f),  glm::vec2(300.0f, 22.0f), glm::vec4(0.85f, 0.25f, 0.22f, 0.9f));
-            m_Renderer.DrawQuad(glm::vec3(180.0f, 140.0f, 0.0f), glm::vec2(320.0f, 40.0f), glm::vec4(0.0f, 0.0f, 0.0f, 0.4f));
-            m_Renderer.DrawQuad(glm::vec3(180.0f, 140.0f, 0.0f), glm::vec2(220.0f, 22.0f), glm::vec4(0.25f, 0.55f, 0.95f, 0.9f));
 
             if (m_ViewportHovered)
             {
@@ -271,6 +433,9 @@ namespace KDot
             return false;
         }
 
+        // ====================================================================
+        // Editor UI
+        // ====================================================================
         virtual void Render() override
         {
             ImGuiWindowFlags window_flags = ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoDocking;
@@ -304,9 +469,12 @@ namespace KDot
                     ImGui::DockBuilderSetNodePos(dockspace_id, viewport->Pos);
                     ImGui::DockBuilderSetNodeSize(dockspace_id, viewport->Size);
 
-                    auto dock_id_left = ImGui::DockBuilderSplitNode(dockspace_id, ImGuiDir_Left, 0.78f, nullptr, &dockspace_id);
-                    ImGui::DockBuilderDockWindow("Viewport", dock_id_left);
-                    ImGui::DockBuilderDockWindow("Inspector", dockspace_id);
+                    ImGuiID center = dockspace_id;
+                    ImGuiID left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.20f, nullptr, &center);
+                    ImGuiID right = ImGui::DockBuilderSplitNode(center, ImGuiDir_Right, 0.32f, nullptr, &center);
+                    ImGui::DockBuilderDockWindow("Explorer", left);
+                    ImGui::DockBuilderDockWindow("Properties", right);
+                    ImGui::DockBuilderDockWindow("Viewport", center);
                     ImGui::DockBuilderFinish(dockspace_id);
                 }
             }
@@ -320,56 +488,30 @@ namespace KDot
                     if (ImGui::MenuItem("Save Project", "Ctrl+S")) {}
                     ImGui::EndMenu();
                 }
+                if (ImGui::BeginMenu("Add"))
+                {
+                    if (ImGui::MenuItem("Cube"))  SpawnCube();
+                    if (ImGui::MenuItem("Light")) SpawnLight();
+                    ImGui::EndMenu();
+                }
                 ImGui::EndMenuBar();
             }
 
-            // ---- Inspector ----------------------------------------------------
-            ImGui::Begin("Inspector");
+            DrawExplorer(io);
+            DrawProperties();
 
-            ImGui::Text("FPS: %.1f  (%.2f ms)", io.Framerate, io.DeltaTime * 1000.0f);
-            ImGui::Text("Draw Calls: %d   Triangles: %d", m_Renderer.DrawCallCount, m_Renderer.Triangles);
-            ImGui::Separator();
-
-            QualitySettings& q = QualitySettings::Get();
-            ImGui::TextUnformatted("Fidelity (Iruna 0.0  <->  Elden 1.0)");
-            if (ImGui::SliderFloat("##fidelity", &m_Fidelity, 0.0f, 1.0f, "%.2f"))
-                q.SetFidelity(m_Fidelity);
-            ImGui::Text("Render dist: %.0f   Chunk edge: %d", q.renderDistance, q.terrainChunkEdgeVerts);
-            ImGui::Text("Max LOD: %d   Max lights: %d", q.maxLODLevels, q.maxLights);
-
-            ImGui::Separator();
-            ImGui::Text("Terrain: %zu chunks, %zu tris", m_Terrain.Chunks().size(), m_Terrain.TriangleCount());
-            ImGui::InputInt("Seed", &m_Seed);
-            if (ImGui::Button("Regenerate"))
-                RegenerateTerrain();
-
-            ImGui::Separator();
-            ImGui::Checkbox("Grass", &m_ShowGrass);
-            ImGui::SameLine();
-            ImGui::Text("%d blades (1 draw call)", m_Grass.InstanceCount());
-
-            ImGui::Separator();
-            ImGui::TextUnformatted("Lighting");
-            ImGui::SliderFloat("Sun", &m_Lights.sun.intensity, 0.0f, 3.0f, "%.2f");
-            ImGui::SliderFloat("Ambient", &m_Lights.ambient.intensity, 0.0f, 1.0f, "%.2f");
-            ImGui::SliderFloat("Fog", &m_Lights.fogDensity, 0.0f, 0.003f, "%.4f");
-
-            ImGui::Separator();
-            ImGui::TextUnformatted("Brush");
-            ImGui::SliderFloat("Radius", &m_BrushRadius, 4.0f, 100.0f, "%.0f");
-            ImGui::SliderFloat("Strength", &m_BrushStrength, 1.0f, 60.0f, "%.0f");
-
-            ImGui::Separator();
-            if (ImGui::Button("Drop ball (R)"))
-                SpawnBall();
-            if (Transform* t = m_Registry.TryGet<Transform>(m_Ball))
+            // Deferred destroy (so we never free an entity mid-UI).
+            if (m_PendingDelete != ecs::kNull)
             {
-                Rigidbody* rb = m_Registry.TryGet<Rigidbody>(m_Ball);
-                ImGui::Text("Ball y: %.1f  grounded: %s", t->position.y, (rb && rb->onGround) ? "yes" : "no");
+                if (m_Registry.Valid(m_PendingDelete))
+                    m_Registry.Destroy(m_PendingDelete);
+                if (m_SelEntity == m_PendingDelete)
+                {
+                    m_Sel = Sel::None;
+                    m_SelEntity = ecs::kNull;
+                }
+                m_PendingDelete = ecs::kNull;
             }
-            ImGui::TextDisabled("WASD fly | right-drag look | scroll zoom");
-            ImGui::TextDisabled("left-click sculpt (Shift = lower)");
-            ImGui::End();
 
             // ---- Viewport (also captures cursor state for picking) ------------
             ImGui::Begin("Viewport");
@@ -386,6 +528,261 @@ namespace KDot
             ImGui::End();
 
             ImGui::End();
+        }
+
+        // ---- World Explorer -------------------------------------------------
+        void DrawExplorer(ImGuiIO& io)
+        {
+            ImGui::Begin("Explorer");
+
+            if (ImGui::CollapsingHeader("Scene", ImGuiTreeNodeFlags_DefaultOpen))
+            {
+                ImGui::Text("FPS: %.1f  (%.2f ms)", io.Framerate, io.DeltaTime * 1000.0f);
+                ImGui::Text("Draw calls: %d   Tris: %d", m_Renderer.DrawCallCount, m_Renderer.Triangles);
+
+                ImGui::TextUnformatted("Tool:");
+                ImGui::SameLine();
+                if (ImGui::RadioButton("Select", m_Tool == Tool::Select)) m_Tool = Tool::Select;
+                ImGui::SameLine();
+                if (ImGui::RadioButton("Sculpt", m_Tool == Tool::Sculpt)) m_Tool = Tool::Sculpt;
+
+                QualitySettings& q = QualitySettings::Get();
+                if (ImGui::SliderFloat("Fidelity", &m_Fidelity, 0.0f, 1.0f, "%.2f"))
+                    q.SetFidelity(m_Fidelity);
+                ImGui::Checkbox("Show grass", &m_ShowGrass);
+            }
+
+            ImGui::Separator();
+            ImGui::TextDisabled("ENVIRONMENT");
+            if (ImGui::Selectable("Sun (Directional)", m_Sel == Sel::Sun))     m_Sel = Sel::Sun;
+            if (ImGui::Selectable("Sky & Fog", m_Sel == Sel::Fog))             m_Sel = Sel::Fog;
+            if (ImGui::Selectable("Terrain", m_Sel == Sel::Terrain))           m_Sel = Sel::Terrain;
+            if (ImGui::Selectable("Grass", m_Sel == Sel::Grass))               m_Sel = Sel::Grass;
+
+            ImGui::Separator();
+            ImGui::TextDisabled("ENTITIES");
+            if (ImGui::SmallButton("+ Cube"))  SpawnCube();
+            ImGui::SameLine();
+            if (ImGui::SmallButton("+ Light")) SpawnLight();
+            ImGui::SameLine();
+            ImGui::TextDisabled("(%zu)", m_Registry.AliveCount());
+
+            // Collect named entities (don't add/destroy while iterating the pool).
+            struct Row { ecs::Entity e; std::string label; };
+            std::vector<Row> rows;
+            m_Registry.View<KDot::Name>([&](ecs::Entity e, KDot::Name& n) {
+                const char* type = m_Registry.Has<LightSource>(e) ? "light"
+                                 : m_Registry.Has<Rigidbody>(e)   ? "body"
+                                 : m_Registry.Has<Prop>(e)        ? "prop"
+                                                                  : "node";
+                rows.push_back({e, n.value + "  [" + type + "]"});
+            });
+            std::sort(rows.begin(), rows.end(),
+                      [](const Row& a, const Row& b) { return ecs::IndexOf(a.e) < ecs::IndexOf(b.e); });
+
+            ImGui::BeginChild("entities", ImVec2(0, 0), true);
+            for (const Row& r : rows)
+            {
+                const bool sel = (m_Sel == Sel::Entity && m_SelEntity == r.e);
+                ImGui::PushID((int)r.e);
+                if (ImGui::Selectable(r.label.c_str(), sel))
+                    Select(r.e);
+                ImGui::PopID();
+            }
+            ImGui::EndChild();
+
+            ImGui::End();
+        }
+
+        // ---- Properties of the selected item --------------------------------
+        void DrawProperties()
+        {
+            ImGui::Begin("Properties");
+            switch (m_Sel)
+            {
+                case Sel::None:    ImGui::TextDisabled("Select an item in the Explorer."); break;
+                case Sel::Sun:     DrawSunProps();    break;
+                case Sel::Fog:     DrawFogProps();    break;
+                case Sel::Terrain: DrawTerrainProps(); break;
+                case Sel::Grass:   DrawGrassProps();  break;
+                case Sel::Entity:
+                    if (m_Registry.Valid(m_SelEntity))
+                        DrawEntityProps(m_SelEntity);
+                    else
+                    {
+                        m_Sel = Sel::None;
+                        m_SelEntity = ecs::kNull;
+                    }
+                    break;
+            }
+            ImGui::End();
+        }
+
+        void DrawSunProps()
+        {
+            ImGui::TextUnformatted("Sun (Directional Light)");
+            ImGui::Separator();
+            if (ImGui::DragFloat3("Direction", &m_Lights.sun.direction.x, 0.01f, -1.0f, 1.0f))
+                m_Lights.sun.direction = glm::normalize(m_Lights.sun.direction);
+            ImGui::ColorEdit3("Color", &m_Lights.sun.color.x);
+            ImGui::SliderFloat("Intensity", &m_Lights.sun.intensity, 0.0f, 3.0f, "%.2f");
+            ImGui::Separator();
+            ImGui::TextUnformatted("Ambient");
+            ImGui::ColorEdit3("Amb. color", &m_Lights.ambient.color.x);
+            ImGui::SliderFloat("Amb. intensity", &m_Lights.ambient.intensity, 0.0f, 1.0f, "%.2f");
+        }
+
+        void DrawFogProps()
+        {
+            ImGui::TextUnformatted("Sky & Fog");
+            ImGui::Separator();
+            ImGui::ColorEdit3("Fog color", &m_Lights.fogColor.x);
+            ImGui::SliderFloat("Fog density", &m_Lights.fogDensity, 0.0f, 0.003f, "%.4f");
+        }
+
+        void DrawTerrainProps()
+        {
+            ImGui::TextUnformatted("Terrain");
+            ImGui::Separator();
+            ImGui::Text("%zu chunks, %zu tris", m_Terrain.Chunks().size(), m_Terrain.TriangleCount());
+            ImGui::InputInt("Seed", &m_Seed);
+            if (ImGui::Button("Regenerate"))
+                RegenerateTerrain();
+            ImGui::Separator();
+            ImGui::TextUnformatted("Sculpt brush (use the Sculpt tool)");
+            ImGui::SliderFloat("Radius", &m_BrushRadius, 4.0f, 100.0f, "%.0f");
+            ImGui::SliderFloat("Strength", &m_BrushStrength, 1.0f, 60.0f, "%.0f");
+            ImGui::TextDisabled("left-click sculpt (hold Shift = lower)");
+        }
+
+        void DrawGrassProps()
+        {
+            ImGui::TextUnformatted("Grass");
+            ImGui::Separator();
+            ImGui::Checkbox("Visible", &m_ShowGrass);
+            ImGui::Text("%d blades (1 draw call)", m_Grass.InstanceCount());
+            ImGui::DragFloat("View distance", &m_Grass.maxDistance, 1.0f, 20.0f, 800.0f, "%.0f");
+            ImGui::DragFloat("Blade height", &m_Grass.bladeHeight, 0.01f, 0.1f, 6.0f, "%.2f");
+            ImGui::DragFloat("Blade width", &m_Grass.bladeWidth, 0.005f, 0.02f, 1.0f, "%.3f");
+        }
+
+        // Component-by-component editor for a single entity.
+        enum class Rem { None, Prop, Light, Rb, Col };
+
+        void DrawEntityProps(ecs::Entity e)
+        {
+            ImGui::PushID((int)e);
+
+            // Name
+            if (KDot::Name* n = m_Registry.TryGet<KDot::Name>(e))
+            {
+                char buf[128];
+                std::strncpy(buf, n->value.c_str(), sizeof(buf) - 1);
+                buf[sizeof(buf) - 1] = '\0';
+                if (ImGui::InputText("Name", buf, sizeof(buf)))
+                    n->value = buf;
+            }
+            ImGui::TextDisabled("entity #%u", ecs::IndexOf(e));
+            ImGui::Separator();
+
+            Rem toRemove = Rem::None;
+
+            if (Transform* t = m_Registry.TryGet<Transform>(e))
+            {
+                if (ImGui::CollapsingHeader("Transform", ImGuiTreeNodeFlags_DefaultOpen))
+                {
+                    ImGui::DragFloat3("Position", &t->position.x, 0.25f);
+                    glm::vec3 euler = glm::degrees(glm::eulerAngles(t->rotation));
+                    if (ImGui::DragFloat3("Rotation", &euler.x, 1.0f))
+                        t->rotation = glm::quat(glm::radians(euler));
+                    ImGui::DragFloat3("Scale", &t->scale.x, 0.05f, 0.01f, 1000.0f);
+                }
+            }
+
+            if (Prop* p = m_Registry.TryGet<Prop>(e))
+            {
+                if (ImGui::CollapsingHeader("Prop (box)", ImGuiTreeNodeFlags_DefaultOpen))
+                {
+                    ImGui::ColorEdit4("Color", &p->color.x);
+                    ImGui::DragFloat3("Size", &p->size.x, 0.1f, 0.01f, 1000.0f);
+                    if (ImGui::SmallButton("Remove Prop")) toRemove = Rem::Prop;
+                }
+            }
+
+            if (LightSource* ls = m_Registry.TryGet<LightSource>(e))
+            {
+                if (ImGui::CollapsingHeader("Light Source", ImGuiTreeNodeFlags_DefaultOpen))
+                {
+                    ImGui::ColorEdit3("Color", &ls->color.x);
+                    ImGui::DragFloat("Intensity", &ls->intensity, 0.05f, 0.0f, 20.0f);
+                    ImGui::DragFloat("Radius", &ls->radius, 1.0f, 1.0f, 2000.0f);
+                    if (ImGui::SmallButton("Remove Light")) toRemove = Rem::Light;
+                }
+            }
+
+            if (Rigidbody* rb = m_Registry.TryGet<Rigidbody>(e))
+            {
+                if (ImGui::CollapsingHeader("Rigidbody", ImGuiTreeNodeFlags_DefaultOpen))
+                {
+                    float mass = rb->mass;
+                    if (ImGui::DragFloat("Mass", &mass, 0.1f, 0.0f, 1000.0f))
+                        rb->SetMass(mass);
+                    ImGui::SliderFloat("Restitution", &rb->restitution, 0.0f, 1.0f);
+                    ImGui::SliderFloat("Friction", &rb->friction, 0.0f, 1.0f);
+                    ImGui::SliderFloat("Lin. damping", &rb->linearDamping, 0.0f, 1.0f);
+                    ImGui::Checkbox("Use gravity", &rb->useGravity);
+                    bool isStatic = rb->isStatic;
+                    if (ImGui::Checkbox("Static", &isStatic))
+                        rb->SetStatic(isStatic);
+                    ImGui::Text("Velocity: %.1f, %.1f, %.1f", rb->velocity.x, rb->velocity.y, rb->velocity.z);
+                    ImGui::Text("On ground: %s", rb->onGround ? "yes" : "no");
+                    if (ImGui::SmallButton("Remove Rigidbody")) toRemove = Rem::Rb;
+                }
+            }
+
+            if (Collider* col = m_Registry.TryGet<Collider>(e))
+            {
+                if (ImGui::CollapsingHeader("Collider", ImGuiTreeNodeFlags_DefaultOpen))
+                {
+                    const char* types[] = {"Box", "Sphere"};
+                    int ti = (int)col->type;
+                    if (ImGui::Combo("Shape", &ti, types, 2))
+                        col->type = (ColliderType)ti;
+                    if (col->type == ColliderType::Box)
+                        ImGui::DragFloat3("Half extents", &col->halfExtents.x, 0.1f, 0.01f, 1000.0f);
+                    else
+                        ImGui::DragFloat("Radius", &col->radius, 0.1f, 0.01f, 1000.0f);
+                    ImGui::DragFloat3("Offset", &col->localOffset.x, 0.1f);
+                    ImGui::Checkbox("Trigger", &col->isTrigger);
+                    if (ImGui::SmallButton("Remove Collider")) toRemove = Rem::Col;
+                }
+            }
+
+            switch (toRemove)
+            {
+                case Rem::Prop:  m_Registry.Remove<Prop>(e); break;
+                case Rem::Light: m_Registry.Remove<LightSource>(e); break;
+                case Rem::Rb:    m_Registry.Remove<Rigidbody>(e); break;
+                case Rem::Col:   m_Registry.Remove<Collider>(e); break;
+                case Rem::None:  break;
+            }
+
+            ImGui::Separator();
+            ImGui::TextDisabled("Add component:");
+            if (!m_Registry.Has<Prop>(e))        { if (ImGui::Button("Prop"))      m_Registry.Emplace<Prop>(e); ImGui::SameLine(); }
+            if (!m_Registry.Has<LightSource>(e)) { if (ImGui::Button("Light"))     m_Registry.Emplace<LightSource>(e); ImGui::SameLine(); }
+            if (!m_Registry.Has<Rigidbody>(e))   { if (ImGui::Button("Rigidbody")) m_Registry.Emplace<Rigidbody>(e); ImGui::SameLine(); }
+            if (!m_Registry.Has<Collider>(e))    { if (ImGui::Button("Collider"))  m_Registry.Emplace<Collider>(e, Collider::MakeBox(glm::vec3(3.0f))); }
+            ImGui::NewLine();
+
+            ImGui::Separator();
+            if (ImGui::Button("Duplicate"))
+                DuplicateSelected();
+            ImGui::SameLine();
+            if (ImGui::Button("Delete"))
+                m_PendingDelete = e;
+
+            ImGui::PopID();
         }
 
         virtual void PostRender() override {}

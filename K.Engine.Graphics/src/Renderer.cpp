@@ -156,7 +156,9 @@ namespace KDot
     }
     void Renderer::DrawCube(const glm::vec3 &position, const glm::vec3 &size, const glm::vec4 &color, float angle = 0.0f, unsigned int textureIndex)
     {
-        glm::mat4 transform =  glm::scale(glm::mat4(1.0f), size) * glm::rotate(glm::mat4(1.0f), glm::radians(angle), {1.0f, 1.0f, 0.0f}) * glm::translate(glm::mat4(1.0f), position);
+        // Standard TRS: translate * rotate(yaw) * scale, so position and size
+        // stay independent (the cube is centred at 'position' and sized by 'size').
+        glm::mat4 transform = glm::translate(glm::mat4(1.0f), position) * glm::rotate(glm::mat4(1.0f), glm::radians(angle), {0.0f, 1.0f, 0.0f}) * glm::scale(glm::mat4(1.0f), size);
         constexpr size_t cubeVertexCount = 36;
         if (m_QuadIndexCount >= MaxIndices)
         {
