@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <fstream>
 #include <Math/Vector.hpp>
+#include <Core/MeshData.hpp>
 #include <glm.hpp>
 #include <gtx/rotate_vector.hpp>
 #include <gtx/transform.hpp>
@@ -46,6 +47,11 @@ namespace KDot
         void EndStream();
         GLuint GetFrameBufferTexture() { return m_Texture; }
         void LoadTexture(const char *path);
+        // Draw an arbitrary indexed mesh (e.g. a terrain chunk) with the active
+        // camera. Uploaded immediately and drawn in its own draw call; this is
+        // separate from the quad/cube batch above. Call between BeginStream and
+        // EndStream so the view/projection match the rest of the frame.
+        void DrawMesh(const MeshData &mesh);
         void DrawCube(const glm::vec3 &position, const glm::vec3 &size, const glm::vec4 &color, float angle, unsigned int textureIndex = 0);
         void DrawQuad(const glm::vec2 &position, const glm::vec2 &size, const glm::vec4 &color, float rotation, const glm::vec2 &center);
         void DrawQuad(const glm::vec3 &position, const glm::vec2 &size, const glm::vec4 &color);
@@ -63,6 +69,7 @@ namespace KDot
         void SetVertexBufferData(const void *data, GLuint size);
         void AddVertexBuffer();
         void AddIndexBuffer();
+        void InitMeshBuffers();
         int m_CurrentTextureIndex = 0;
         glm::vec4 m_QuadVertexPositions[4];
         glm::vec4 m_CubeVertexPositions[8];
@@ -96,6 +103,11 @@ namespace KDot
         GLuint m_IndexBuffer;
         GLuint m_RenderBuffer;
         GLuint m_Texture;
+        // Dedicated buffers for DrawMesh (terrain / arbitrary indexed geometry).
+        GLuint m_MeshVAO = 0;
+        GLuint m_MeshVBO = 0;
+        GLuint m_MeshIBO = 0;
+        bool   m_MeshBuffersReady = false;
         glm::mat4 viewMatrix;
         float cameraZoom = 90.0f;
         float m_Height = 1280.0f;
