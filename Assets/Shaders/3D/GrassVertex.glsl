@@ -25,16 +25,16 @@ void main()
     float t = vBlade.y;
 
     // Distance fade based on the camera's horizontal distance to the blade.
-    vec3 flat = uCameraPos - iPos;
-    flat.y = 0.0;
-    float camDist = length(flat);
+    vec3 camDelta = uCameraPos - iPos;
+    camDelta.y = 0.0;
+    float camDist = length(camDelta);
     float fade = clamp(1.0 - camDist / max(uMaxDist, 1.0), 0.0, 1.0);
 
     float h = uBladeHeight * iRand.y * fade; // far blades collapse to 0 height
     float w = uBladeWidth * mix(1.0, 0.12, t); // taper toward the tip
 
     // Billboard around the Y axis so the blade always faces the camera.
-    vec3 toCam = camDist > 0.001 ? flat / camDist : vec3(0.0, 0.0, 1.0);
+    vec3 toCam = camDist > 0.001 ? camDelta / camDist : vec3(0.0, 0.0, 1.0);
     vec3 right = vec3(toCam.z, 0.0, -toCam.x);
 
     // Wind: bend the upper part of the blade along a world direction.

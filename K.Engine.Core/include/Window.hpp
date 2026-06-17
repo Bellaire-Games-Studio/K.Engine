@@ -30,7 +30,11 @@ namespace KDot
             virtual ~Window() = default;
 
             virtual void Update() = 0;
-            
+
+            // True when the OS window has been asked to close. On web the loop is
+            // driven by the browser, so this is always false there.
+            virtual bool ShouldClose() const = 0;
+
             virtual uint32_t Width() const { return m_Width; }
             virtual uint32_t Height() const { return m_Height; }
 

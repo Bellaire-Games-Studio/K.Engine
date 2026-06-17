@@ -23,8 +23,9 @@ The build folder holds a current build of the repository.
 - [ ] Audio
 - [ ] Animation
 - [X] Online/In-browser (Emscripten / WebGL2)
-- [ ] Native Windows / Linux *(roadmap)*
-- [ ] WebGPU backend *(roadmap)*
+- [X] Native desktop (OpenGL 3.3 core via GLFW + GLEW) — Linux build+run verified
+- [ ] WebGPU backend *(planned; RHI seam in place)*
+- [ ] Vulkan backend *(planned)*
 - [ ] Multithreading
 
 ## Modules
@@ -99,16 +100,27 @@ budget and texture sampling, so a settings menu only ever touches one call.
 Demo controls: `WASD` fly · right-drag look · scroll zoom ·
 left-click sculpt (hold `Shift` to lower) · `R` re-drop the ball.
 
-## Roadmap: cross-platform & WebGPU
+## Cross-platform
 
-The new gameplay systems (terrain, physics, ECS, config, math) are deliberately
-**graphics-API-agnostic** — pure C++/GLM with no GL coupling — so they already
-compile toward any backend. The remaining cross-platform work is isolated to the
-window + render layers:
+The engine now builds on both the web (Emscripten/WebGL2) and **native desktop**
+(GLFW + GLEW, OpenGL 3.3 core). Platform differences are isolated:
 
-1. Abstract the window/main-loop off Emscripten (native GLFW + a desktop game loop).
-2. Add a desktop GL path (glad/GLEW) behind the existing `Renderer` so Windows/Linux build.
-3. Introduce a small RHI seam and a **WebGPU (Dawn/wgpu)** backend behind it.
+- `Platform/Platform.hpp` — platform detection (`KE_PLATFORM_WEB/WINDOWS/LINUX/MACOS`).
+- `Platform/GL.hpp` — one place for the GL + window-system includes.
+- `Window::Create` returns a `JavascriptWindow` (web) or `DesktopWindow` (native);
+  the main loop is `emscripten_set_main_loop` on web and a plain `while` loop on desktop.
+- One set of shaders authored as GLSL ES 3.00; `ShaderUtil` rewrites them to
+  GL 3.3 core on desktop on the fly.
+
+### Roadmap: WebGPU & Vulkan
+
+The gameplay systems (terrain, physics, ECS, config, math) are graphics-API
+agnostic, so the remaining work is backend-only, behind the RHI seam
+(`RHI/GraphicsAPI.hpp`, selected via the `KE_BACKEND_*` CMake options):
+
+1. ✅ Native desktop OpenGL (window/loop/RHI seam, shader adaptation).
+2. **WebGPU** (Dawn on desktop / browser WebGPU on web) — portable, modern.
+3. **Vulkan** — native high-performance desktop path.
 
 ## Building (web)
 
@@ -117,6 +129,21 @@ window + render layers:
 - run `build.bat`
 - Open `build/bin/K.Engine.html` in your browser
 
+## Building (native desktop)
+
+Install the dependencies, then a normal CMake build:
+
+- **Linux**: `sudo apt install build-essential cmake libglfw3-dev libglew-dev libgl1-mesa-dev`
+- **macOS**: `brew install cmake glfw glew`
+- **Windows**: install [CMake](https://cmake.org/download/) + Visual Studio, and
+  `vcpkg install glfw3 glew` (configure with the vcpkg toolchain file)
+
+```sh
+cmake -S . -B build-native -DCMAKE_BUILD_TYPE=Release
+cmake --build build-native -j
+./build-native/bin/K.Engine
+```
+
 The platform-agnostic modules (Physics / Terrain / Common) can also be compiled
 and unit-tested with a normal host compiler (e.g. `g++ -std=c++17 -I glm ...`),
-which is how they are validated independently of the WebGL build.
+independently of any graphics backend.

@@ -1,4 +1,5 @@
 #include <GrassRenderer.hpp>
+#include <Core/ShaderUtil.hpp>
 #include <iostream>
 #include <fstream>
 #include <iterator>
@@ -23,6 +24,7 @@ namespace KDot
             return 0;
         }
         std::string src((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        src = AdaptShaderForPlatform(src); // GLES "300 es" -> desktop "330 core"
 
         const char* c = src.c_str();
         GLuint shader = glCreateShader(type);

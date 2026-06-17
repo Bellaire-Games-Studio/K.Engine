@@ -5,12 +5,7 @@
 #include <gtc/matrix_transform.hpp>
 #include <Core/GrassInstance.hpp>
 #include <Light.hpp>
-
-#ifdef __EMSCRIPTEN__
-#include <emscripten.h>
-#include <GL/glew.h>
-#include <GLFW/glfw3.h>
-#endif
+#include <Platform/GL.hpp>
 
 namespace KDot
 {

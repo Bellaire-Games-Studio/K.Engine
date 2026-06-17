@@ -5,10 +5,7 @@
 #include <iostream>
 #include <algorithm>
 #include <stdlib.h>
-#ifdef __EMSCRIPTEN__
-    #include <emscripten.h>
-    #include <GLFW/glfw3.h>
-#endif
+#include <Platform/GL.hpp>
 #include <Application.hpp>
 
 

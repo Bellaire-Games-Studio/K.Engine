@@ -1,4 +1,5 @@
 #include <Platform.hpp>
+#if defined(KE_PLATFORM_WEB)
 namespace KDot
 {
     EM_JS(int, getHeight, (), {
@@ -151,3 +152,4 @@ namespace KDot
 		});
     }
 }
+#endif // KE_PLATFORM_WEB

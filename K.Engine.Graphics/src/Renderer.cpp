@@ -1,5 +1,6 @@
 #include <Renderer.hpp>
 #include <Core/QualitySettings.hpp>
+#include <Core/ShaderUtil.hpp>
 #include <algorithm>
 #include <cstddef>
 #define STB_IMAGE_IMPLEMENTATION
@@ -98,6 +99,7 @@ namespace KDot
             source.append(line + "\n");
         in_file.close();
 
+        source = AdaptShaderForPlatform(source); // GLES "300 es" -> desktop "330 core"
         const char *source_c_str = source.c_str();
         return InitShader(source_c_str, type);
     }
@@ -447,11 +449,6 @@ namespace KDot
         glBufferSubData(GL_ARRAY_BUFFER, 0, size, data);
     }
 
-    void Renderer::AddIndexBuffer()
-    {
-        BindVertexArray();
-        BindIndexBuffer();
-    }
     void Renderer::BeginStream(Camera& camera)
     {
         viewMatrix = camera.GetViewMatrix();

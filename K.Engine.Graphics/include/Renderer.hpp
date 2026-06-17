@@ -12,12 +12,7 @@
 #include <gtx/transform.hpp>
 #include <ext.hpp>
 #include <Camera.hpp>
-
-#ifdef __EMSCRIPTEN__
-#include <emscripten.h>
-#include <GL/glew.h>
-#include <GLFW/glfw3.h>
-#endif
+#include <Platform/GL.hpp>
 namespace KDot
 {
     float closestResolution(int n, int multiple);
@@ -77,7 +72,6 @@ namespace KDot
         void InitiateVertexArray();
         void SetVertexBufferData(const void *data, GLuint size);
         void AddVertexBuffer();
-        void AddIndexBuffer();
         void InitMeshBuffers();
         void ApplyFrameUniforms(); // binds program + sets projection/view/unlit/camera
         int m_CurrentTextureIndex = 0;
@@ -94,8 +88,6 @@ namespace KDot
         void UnbindVertexBuffer();
         void BindVertexArray();
         void UnbindVertexArray();
-        void BindIndexBuffer();
-        void UnbindIndexBuffer();
         const uint32_t MaxCubes = 5000;
         const uint32_t MaxQuads = MaxCubes * 6;
         const uint32_t MaxVertices = MaxQuads * 4;
@@ -126,7 +118,6 @@ namespace KDot
         GLuint m_FrameBuffer;
         GLuint m_VertexArray;
         GLuint m_VertexBuffer;
-        GLuint m_IndexBuffer;
         GLuint m_RenderBuffer;
         GLuint m_Texture;
         // Dedicated buffers for DrawMesh (terrain / arbitrary indexed geometry).

@@ -1,29 +1,25 @@
 #include "K.hpp"
 
+// Web entry point used by emscripten_set_main_loop_arg; on desktop the loop in
+// Application::Run() calls RunFrame() directly.
 void RunApp(void* ARG)
-    {
-        KDot::Application* arg = static_cast<KDot::Application*>(ARG);
-        float lastFrameTime = arg->m_LastFrameTime;
-        float time = emscripten_get_now();
-        float timestep = time - lastFrameTime;
-        arg->m_LastFrameTime = time;
-        
-        KDot::Window& window = arg->GetWindow();
-        KDot::ImGuiLayer* imGuiLayer = arg->GetImGuiLayer();
-        for (KDot::Layer* layer : arg->m_LayerStack)
-            layer->Update(timestep);
-        imGuiLayer->Begin();
-        for (KDot::Layer* layer : arg->m_LayerStack)
-            layer->Render();
-           
-        imGuiLayer->End();
-        for (KDot::Layer* layer : arg->m_LayerStack)
-            layer->PostRender(); 
-        imGuiLayer->OPGLRender();
-        window.Update();
-    }
+{
+    KDot::Application* app = static_cast<KDot::Application*>(ARG);
+    app->RunFrame();
+}
+
 namespace KDot
 {
+    // Monotonic time in milliseconds, portable across web and desktop.
+    static double NowMs()
+    {
+#if defined(KE_PLATFORM_WEB)
+        return emscripten_get_now();
+#else
+        return glfwGetTime() * 1000.0;
+#endif
+    }
+
     Application *Application::s_Instance = nullptr;
     Application::Application(const Specification &spec)
     {
@@ -64,9 +60,10 @@ namespace KDot
     }
     void Application::Quit()
     {
+        m_Running = false;
+#if defined(KE_PLATFORM_WEB)
         emscripten_cancel_main_loop();
-        
-        
+#endif
     }
     bool Application::OnWindowClose(WindowCloseEvent &e)
     {
@@ -75,21 +72,45 @@ namespace KDot
     }
     bool Application::OnWindowResize(WindowResizeEvent &e)
     {
-
         if (e.GetWidth() == 0 || e.GetHeight() == 0)
         {
-            
             return false;
         }
-        
         return false;
+    }
+
+    void Application::RunFrame()
+    {
+        const double time = NowMs();
+        const double timestep = time - m_LastFrameTime;
+        m_LastFrameTime = time;
+
+        Window& window = GetWindow();
+        ImGuiLayer* imGuiLayer = GetImGuiLayer();
+
+        for (Layer* layer : m_LayerStack)
+            layer->Update(timestep);
+
+        imGuiLayer->Begin();
+        for (Layer* layer : m_LayerStack)
+            layer->Render();
+        imGuiLayer->End();
+
+        for (Layer* layer : m_LayerStack)
+            layer->PostRender();
+        imGuiLayer->OPGLRender();
+
+        window.Update();
     }
 
     void Application::Run()
     {
+        m_LastFrameTime = NowMs();
+#if defined(KE_PLATFORM_WEB)
         emscripten_set_main_loop_arg(&RunApp, this, 0, 1);
-        
+#else
+        while (m_Running && !GetWindow().ShouldClose())
+            RunFrame();
+#endif
     }
-    
 }
-

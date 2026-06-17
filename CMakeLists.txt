@@ -14,6 +14,12 @@ option(USE_ALSA       "Force using ALSA as audio backend (Linux-only)")
 option(USE_PULSEAUDIO "Force using PulseAudio as audio backend (Linux-only)")
 option(USE_SDL2_MIXER "Force using SDL2_mixer as audio backend")
 
+# Graphics backend selection. OpenGL (GLES3 on web / GL 3.3 core on desktop) is
+# the implemented default; WebGPU and Vulkan are planned (see RHI/GraphicsAPI.hpp).
+option(KE_BACKEND_GL     "OpenGL render backend (web + desktop)" ON)
+option(KE_BACKEND_WEBGPU "WebGPU render backend (experimental)" OFF)
+option(KE_BACKEND_VULKAN "Vulkan render backend (experimental)" OFF)
+
 #
 # C_CXX_SOURCES_DIR
 #
@@ -172,6 +178,51 @@ endif() # Emscripten
 ######################################################################
 target_include_directories(${OutputExecutable} PRIVATE ${IMGUI} ${glm} ${SOURCE_CXX_INCLUDE_DIR_Physics} ${SOURCE_CXX_INCLUDE_DIR_Terrain} ${SOURCE_CXX_INCLUDE_DIR_Graphics} ${SOURCE_CXX_INCLUDE_DIR_Audio} ${SOURCE_CXX_INCLUDE_DIR_Core} ${SOURCE_CXX_INCLUDE_DIR_Common} ${SOURCE_CXX_INCLUDE_DIR_Editor} ${SOURCE_CXX_INCLUDE_DIR_Input})
 
+
+######################################################################
+# Backend defines
+######################################################################
+if (KE_BACKEND_WEBGPU)
+    target_compile_definitions(${OutputExecutable} PRIVATE KE_BACKEND_WEBGPU)
+endif()
+if (KE_BACKEND_VULKAN)
+    target_compile_definitions(${OutputExecutable} PRIVATE KE_BACKEND_VULKAN)
+endif()
+
+
+######################################################################
+# Native desktop (Windows / Linux / macOS) link dependencies
+#
+#   The web build gets GL + GLFW from Emscripten; native builds link real
+#   OpenGL, GLEW (function loader) and GLFW. Install them first:
+#     Linux  : sudo apt install libglfw3-dev libglew-dev
+#     macOS  : brew install glfw glew
+#     Windows: vcpkg install glfw3 glew   (use the vcpkg toolchain file)
+######################################################################
+if (NOT EMSCRIPTEN)
+    set(OpenGL_GL_PREFERENCE GLVND)
+    find_package(OpenGL REQUIRED)
+    find_package(glfw3 QUIET)
+    find_package(GLEW QUIET)
+
+    if (NOT TARGET glfw)
+        message(FATAL_ERROR "K.Engine desktop build requires GLFW3 (target 'glfw'). "
+                            "Install it (Linux: libglfw3-dev, macOS: brew install glfw, "
+                            "Windows: vcpkg install glfw3) or set CMAKE_PREFIX_PATH.")
+    endif()
+    if (NOT GLEW_FOUND)
+        message(FATAL_ERROR "K.Engine desktop build requires GLEW. "
+                            "Install it (Linux: libglew-dev, macOS: brew install glew, "
+                            "Windows: vcpkg install glew).")
+    endif()
+
+    target_link_libraries(${OutputExecutable} PRIVATE OpenGL::GL GLEW::GLEW glfw)
+
+    if (UNIX AND NOT APPLE)
+        find_package(Threads REQUIRED)
+        target_link_libraries(${OutputExecutable} PRIVATE ${CMAKE_DL_LIBS} Threads::Threads)
+    endif()
+endif()
 
 
 ######################################################################
