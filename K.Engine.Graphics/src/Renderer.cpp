@@ -1,5 +1,6 @@
 #include <Renderer.hpp>
 #include <Core/QualitySettings.hpp>
+#include <algorithm>
 #include <cstddef>
 #define STB_IMAGE_IMPLEMENTATION
 #include <Image/stb_image.h>
@@ -129,15 +130,23 @@ namespace KDot
     }
     void Renderer::DrawQuad(const glm::mat4 &position, const glm::vec4 &color)
     {
-        constexpr size_t quadVertexCount = 4;
+        // The batch is drawn with glDrawArrays (non-indexed), so a quad must emit
+        // two full triangles = 6 vertices, all fields initialized (an uninitialized
+        // texIndex would otherwise sample a stray texture).
+        static const int order[6] = {0, 1, 2, 0, 2, 3};
+        static const glm::vec2 uvs[4] = {{0.0f, 0.0f}, {1.0f, 0.0f}, {1.0f, 1.0f}, {0.0f, 1.0f}};
         if (m_QuadIndexCount >= MaxIndices)
         {
             NextBatch();
         }
-        for (size_t i = 0; i < quadVertexCount; i++)
+        for (int k = 0; k < 6; k++)
         {
+            const int i = order[k];
             m_QuadVertexBufferPtr->position = position * m_QuadVertexPositions[i];
             m_QuadVertexBufferPtr->color = color;
+            m_QuadVertexBufferPtr->normal = glm::vec3(0.0f, 0.0f, 1.0f);
+            m_QuadVertexBufferPtr->texCoord = uvs[i];
+            m_QuadVertexBufferPtr->texIndex = 0;
             m_QuadVertexBufferPtr++;
         }
         m_QuadIndexCount += 6;
@@ -208,13 +217,7 @@ namespace KDot
         if (!m_MeshBuffersReady)
             InitMeshBuffers();
 
-        glUseProgram(m_ShaderProgram);
-
-        // Far plane follows the fidelity dial so distant terrain isn't clipped.
-        const float farPlane = QualitySettings::Get().renderDistance;
-        glm::mat4 projection = glm::perspective(glm::radians(cameraZoom), 16.0f / 9.0f, 0.1f, farPlane);
-        glUniformMatrix4fv(u_ProjectionMat, 1, GL_FALSE, &projection[0][0]);
-        glUniformMatrix4fv(u_ViewMat, 1, GL_FALSE, &viewMatrix[0][0]);
+        ApplyFrameUniforms(); // uses the active projection set by BeginStream
 
         glBindVertexArray(m_MeshVAO);
         glBindBuffer(GL_ARRAY_BUFFER, m_MeshVBO);
@@ -229,33 +232,44 @@ namespace KDot
     }
     void Renderer::NextBatch()
     {
-        Flush();
-        StartBatch();
-
+        Flush(); // Flush() now empties the batch, so the next quad starts clean
+    }
+    void Renderer::ResetBatch()
+    {
+        m_QuadIndexCount = 0;
+        m_QuadVertexBufferPtr = m_QuadVertexBufferBase;
     }
     void Renderer::StartBatch()
     {
-        m_QuadIndexCount = 0;
+        // Frame start: clear the per-frame stats as well as the vertex batch.
         DrawCallCount = 0;
         Triangles = 0;
         QuadCount = 0;
-        m_QuadVertexBufferPtr = m_QuadVertexBufferBase;
+        ResetBatch();
+    }
+    void Renderer::ApplyFrameUniforms()
+    {
+        glUseProgram(m_ShaderProgram);
+        glUniformMatrix4fv(u_ProjectionMat, 1, GL_FALSE, &m_ActiveProjection[0][0]);
+        glUniformMatrix4fv(u_ViewMat, 1, GL_FALSE, &viewMatrix[0][0]);
+        if (u_Unlit >= 0)
+            glUniform1i(u_Unlit, m_UnlitMode);
+        if (u_CameraPos >= 0)
+            glUniform3fv(u_CameraPos, 1, &m_CameraWorldPos[0]);
     }
     void Renderer::Flush()
     {
-        glm::mat4 projection = glm::perspective(glm::radians(cameraZoom), (float)16 / (float)9, 0.1f, QualitySettings::Get().renderDistance);
-        glUniformMatrix4fv(u_ProjectionMat, 1, GL_FALSE, &projection[0][0]);
-        glUniformMatrix4fv(u_ViewMat, 1, GL_FALSE, &viewMatrix[0][0]);
+        ApplyFrameUniforms();
 
         if (m_QuadIndexCount == 0)
             return;
         uint32_t dataSize = (uint32_t)((uint8_t *)m_QuadVertexBufferPtr - (uint8_t *)m_QuadVertexBufferBase);
-        glUseProgram(m_ShaderProgram);
-        
+
         SetVertexBufferData(m_QuadVertexBufferBase, dataSize);
         BindVertexArray();
         glDrawArrays(GL_TRIANGLES, 0, m_QuadIndexCount);
         DrawCallCount++;
+        ResetBatch(); // empty the batch so a following Flush() won't redraw it
     }
     bool Renderer::Compile()
     {
@@ -322,6 +336,16 @@ namespace KDot
         AddVertexBuffer();
         u_ProjectionMat = glGetUniformLocation(m_ShaderProgram, "projection");
         u_ViewMat = glGetUniformLocation(m_ShaderProgram, "view");
+        u_Unlit = glGetUniformLocation(m_ShaderProgram, "uUnlit");
+        u_CameraPos = glGetUniformLocation(m_ShaderProgram, "uCameraPos");
+        u_AmbientColor = glGetUniformLocation(m_ShaderProgram, "uAmbientColor");
+        u_AmbientIntensity = glGetUniformLocation(m_ShaderProgram, "uAmbientIntensity");
+        u_SunDir = glGetUniformLocation(m_ShaderProgram, "uSunDir");
+        u_SunColor = glGetUniformLocation(m_ShaderProgram, "uSunColor");
+        u_SunIntensity = glGetUniformLocation(m_ShaderProgram, "uSunIntensity");
+        u_PointCount = glGetUniformLocation(m_ShaderProgram, "uPointCount");
+        u_FogColor = glGetUniformLocation(m_ShaderProgram, "uFogColor");
+        u_FogDensity = glGetUniformLocation(m_ShaderProgram, "uFogDensity");
         
         m_QuadVertexBufferBase = new Vertex[MaxVertices];
         QuadIndices = new uint32_t[MaxIndices];
@@ -430,11 +454,62 @@ namespace KDot
     {
         viewMatrix = camera.GetViewMatrix();
         cameraZoom = camera.getZoom();
+        m_CameraWorldPos = camera.m_Position;
+        m_UnlitMode = 0;
+        // Far plane follows the fidelity dial so distant terrain isn't clipped.
+        m_ActiveProjection = glm::perspective(glm::radians(cameraZoom), 16.0f / 9.0f, 0.1f,
+                                              QualitySettings::Get().renderDistance);
         StartBatch();
     }
     void Renderer::EndStream()
     {
         Flush();
+    }
+    void Renderer::Begin2D(float width, float height)
+    {
+        Flush(); // make sure any pending 3D geometry is drawn first
+        // Top-left origin orthographic projection in pixels; identity view.
+        m_ActiveProjection = glm::ortho(0.0f, width, height, 0.0f, -1.0f, 1.0f);
+        viewMatrix = glm::mat4(1.0f);
+        m_UnlitMode = 1;
+        glDisable(GL_DEPTH_TEST);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        // Flush() above already emptied the batch; HUD quads start clean.
+    }
+    void Renderer::End2D()
+    {
+        Flush();
+        glDisable(GL_BLEND);
+        glEnable(GL_DEPTH_TEST);
+        m_UnlitMode = 0;
+    }
+    void Renderer::SetLights(const LightManager& lights, const glm::vec3& cameraPos)
+    {
+        glUseProgram(m_ShaderProgram);
+
+        glUniform3fv(u_AmbientColor, 1, &lights.ambient.color[0]);
+        glUniform1f(u_AmbientIntensity, lights.ambient.intensity);
+
+        glm::vec3 sunDir = glm::normalize(lights.sun.direction);
+        glUniform3fv(u_SunDir, 1, &sunDir[0]);
+        glUniform3fv(u_SunColor, 1, &lights.sun.color[0]);
+        glUniform1f(u_SunIntensity, lights.sun.intensity);
+
+        glUniform3fv(u_FogColor, 1, &lights.fogColor[0]);
+        glUniform1f(u_FogDensity, lights.fogDensity);
+
+        const int budget = std::min(kMaxShaderPointLights, QualitySettings::Get().maxLights);
+        std::vector<PointLight> pts = lights.SelectPoints(cameraPos, budget);
+        glUniform1i(u_PointCount, (int)pts.size());
+        for (size_t i = 0; i < pts.size(); ++i)
+        {
+            std::string s = std::to_string(i);
+            glUniform3fv(glGetUniformLocation(m_ShaderProgram, ("uPointPos[" + s + "]").c_str()), 1, &pts[i].position[0]);
+            glUniform3fv(glGetUniformLocation(m_ShaderProgram, ("uPointColor[" + s + "]").c_str()), 1, &pts[i].color[0]);
+            glUniform1f(glGetUniformLocation(m_ShaderProgram, ("uPointIntensity[" + s + "]").c_str()), pts[i].intensity);
+            glUniform1f(glGetUniformLocation(m_ShaderProgram, ("uPointRadius[" + s + "]").c_str()), pts[i].radius);
+        }
     }
     void Renderer::BindVertexBuffer()
     {

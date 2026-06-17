@@ -1,14 +1,17 @@
-#include "K.hpp" // Main header file for K.Engine.Core, includes Application, which is the main class/wrapper for the engine, and Window, which creates a display window and handles events within JavaScript
+#include "K.hpp" // Main header file for K.Engine.Core
 
-#include "imgui.h"      // External library, C++ ui library
+#include "imgui.h"
 #include "imgui_internal.h"
-#include "Renderer.hpp" // Renders geometry into a frame buffer shown in the viewport
+#include "Renderer.hpp"
 
 #include <Terrain.hpp>
 #include <PhysicsWorld.hpp>
+#include <Light.hpp>
+#include <Input.hpp>
 #include <EntitityComponentSystem/ECS.hpp>
 #include <Core/Transform.hpp>
 #include <Core/QualitySettings.hpp>
+#include <Core/Picking.hpp>
 #include <algorithm>
 
 using namespace std;
@@ -18,28 +21,40 @@ namespace KDot
     // -------------------------------------------------------------------------
     // WorldLayer
     //
-    //  Demo bringing the new foundation together: a procedurally generated,
-    //  LOD'd terrain (driven by the fidelity dial), a physics body that falls
-    //  and settles on the surface via the ECS + PhysicsWorld, and an editor
-    //  panel that sculpts the terrain and scrubs fidelity at runtime.
+    //  Demo: procedurally generated LOD terrain lit by a sun + point lights,
+    //  a physics body that settles on the surface (ECS + PhysicsWorld), a
+    //  mouse-driven fly camera, click-to-sculpt via screen-ray picking, and a
+    //  2D HUD drawn with the renderer's orthographic pass.
+    //
+    //  Controls: WASD fly · right-drag look · scroll zoom ·
+    //            left-click sculpt (hold Shift to lower) · R re-drop the ball
     // -------------------------------------------------------------------------
     class WorldLayer : public Layer
     {
-        Renderer m_Renderer;
-        Camera   m_Camera;
-        Terrain  m_Terrain;
-        PhysicsWorld   m_Physics;
-        ecs::Registry  m_Registry;
-        ecs::Entity    m_Ball = ecs::kNull;
+        Renderer      m_Renderer;
+        Camera        m_Camera;
+        Terrain       m_Terrain;
+        PhysicsWorld  m_Physics;
+        LightManager  m_Lights;
+        ecs::Registry m_Registry;
+        ecs::Entity   m_Ball = ecs::kNull;
 
-        ImVec2 viewportSize = ImVec2(0.0f, 0.0f);
         bool   first = true;
 
-        // Editor state
+        // Editor / interaction state
         float m_Fidelity      = 0.65f;
-        float m_BrushRadius   = 24.0f;
-        float m_BrushStrength = 12.0f;
+        float m_BrushRadius   = 28.0f;
+        float m_BrushStrength = 18.0f;
         int   m_Seed          = 1337;
+
+        // Mouse / viewport state (viewport rect captured during Render()).
+        glm::vec2 m_LastMouse{0.0f, 0.0f};
+        bool      m_Looking = false;
+        bool      m_ViewportHovered = false;
+        glm::vec2 m_ViewportNDC{0.0f, 0.0f};
+
+        static constexpr float kFbW = 2560.0f;
+        static constexpr float kFbH = 1440.0f;
 
     public:
         WorldLayer() : Layer("World")
@@ -50,12 +65,23 @@ namespace KDot
             QualitySettings::Get().SetFidelity(m_Fidelity);
             RegenerateTerrain();
 
-            // Physics walks on the terrain heightfield.
             m_Physics.sampleTerrainHeight = [this](float x, float z) { return m_Terrain.HeightAt(x, z); };
             m_Physics.sampleTerrainNormal = [this](float x, float z) { return m_Terrain.NormalAt(x, z); };
 
-            // Fly camera looking out over the terrain.
             m_Camera = Camera(glm::vec3(0.0f, 140.0f, 280.0f), glm::vec3(0.0f, 1.0f, 0.0f), -90.0f, -22.0f);
+            m_Camera.SetMovementSpeed(0.12f);
+
+            // Lighting: a warm sun, soft sky ambient, distance fog, and two point
+            // lights (one follows the ball, one is a static cyan marker).
+            m_Lights.ambient.color = glm::vec3(0.55f, 0.65f, 0.85f);
+            m_Lights.ambient.intensity = 0.28f;
+            m_Lights.sun.direction = glm::normalize(glm::vec3(-0.40f, -0.82f, -0.45f));
+            m_Lights.sun.color = glm::vec3(1.0f, 0.96f, 0.88f);
+            m_Lights.sun.intensity = 1.15f;
+            m_Lights.fogColor = glm::vec3(0.45f, 0.62f, 0.85f);
+            m_Lights.fogDensity = 0.00075f;
+            m_Lights.points.push_back({glm::vec3(0.0f, 30.0f, 0.0f), glm::vec3(1.0f, 0.6f, 0.3f), 2.2f, 140.0f});
+            m_Lights.points.push_back({glm::vec3(160.0f, 50.0f, -160.0f), glm::vec3(0.3f, 0.7f, 1.0f), 2.0f, 220.0f});
 
             SpawnBall();
         }
@@ -64,8 +90,8 @@ namespace KDot
 
         void RegenerateTerrain()
         {
-            const int edge  = QualitySettings::Get().terrainChunkEdgeVerts;
-            const int cells  = edge - 1;
+            const int edge = QualitySettings::Get().terrainChunkEdgeVerts;
+            const int cells = edge - 1;
             const float cell = 2.0f;
 
             TerrainConfig cfg;
@@ -79,7 +105,7 @@ namespace KDot
 
             const float spanX = cfg.chunksX * cells * cell;
             const float spanZ = cfg.chunksZ * cells * cell;
-            cfg.origin = glm::vec3(-spanX * 0.5f, 0.0f, -spanZ * 0.5f); // centre the world at the origin
+            cfg.origin = glm::vec3(-spanX * 0.5f, 0.0f, -spanZ * 0.5f);
 
             m_Terrain.Generate(cfg);
         }
@@ -99,22 +125,68 @@ namespace KDot
             m_Registry.Emplace<Collider>(m_Ball, Collider::MakeSphere(3.0f));
         }
 
+        // Cursor pick against the terrain/colliders, using the viewport NDC
+        // captured during Render(). Returns whether anything was hit.
+        bool PickWorld(RaycastHit& outHit)
+        {
+            const float fov = m_Camera.getZoom();
+            const glm::mat4 proj = glm::perspective(glm::radians(fov), kFbW / kFbH, 0.1f,
+                                                    QualitySettings::Get().renderDistance);
+            const Picking::PickRay pr = Picking::ScreenToRay(m_ViewportNDC, m_Camera.GetViewMatrix(), proj);
+            Ray ray{pr.origin, pr.direction};
+            outHit = m_Physics.Raycast(m_Registry, ray, 6000.0f);
+            return outHit.hit;
+        }
+
         virtual void Update(const double deltaTime) override
         {
             float dt = static_cast<float>(deltaTime) / 1000.0f; // ms -> seconds
-            dt = std::min(dt, 0.033f);                          // clamp huge first-frame steps
+            dt = std::min(dt, 0.033f);
+
+            // --- Mouse look (right-drag) ---
+            auto mp = Input::GetMousePosition();
+            glm::vec2 mouse(mp.first, mp.second);
+            const bool rightDown = Input::IsMouseButtonPressed(KDot::Mouse::RightClick);
+            if (rightDown && m_Looking)
+            {
+                const glm::vec2 d = mouse - m_LastMouse;
+                m_Camera.ProcessMouse(d.x, d.y);
+            }
+            m_Looking = rightDown;
+            m_LastMouse = mouse;
 
             m_Camera.Update(deltaTime);
-            m_Terrain.Update(m_Camera.m_Position); // LOD selection + rebuild dirty chunks
+
+            // --- Click to sculpt at the picked terrain point ---
+            if (m_ViewportHovered && Input::IsMouseButtonPressed(KDot::Mouse::LeftClick))
+            {
+                RaycastHit hit;
+                if (PickWorld(hit))
+                {
+                    const SculptMode mode = Input::IsKeyPressed(KDot::Key::LeftShift) ? SculptMode::Lower : SculptMode::Raise;
+                    m_Terrain.Sculpt(glm::vec2(hit.point.x, hit.point.z), m_BrushRadius, m_BrushStrength, mode, dt);
+                }
+            }
+
+            // --- Make the first point light follow the ball ---
+            if (!m_Lights.points.empty())
+            {
+                if (Transform* t = m_Registry.TryGet<Transform>(m_Ball))
+                    m_Lights.points[0].position = t->position + glm::vec3(0.0f, 12.0f, 0.0f);
+            }
+
+            m_Terrain.Update(m_Camera.m_Position);
             m_Physics.Step(m_Registry, dt);
 
+            // --- Render the scene into the offscreen framebuffer ---
             m_Renderer.BindFrameBuffer();
-            glViewport(0, 0, 2560, 1440); // match the fixed framebuffer (ImGui resets the viewport each frame)
-            glClearColor(0.45f, 0.62f, 0.85f, 1.0f); // sky
+            glViewport(0, 0, (int)kFbW, (int)kFbH);
+            glClearColor(0.45f, 0.62f, 0.85f, 1.0f);
             glEnable(GL_DEPTH_TEST);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
             m_Renderer.BeginStream(m_Camera);
+            m_Renderer.SetLights(m_Lights, m_Camera.m_Position);
 
             for (const TerrainChunk& chunk : m_Terrain.Chunks())
                 m_Renderer.DrawMesh(chunk.Mesh());
@@ -123,19 +195,57 @@ namespace KDot
                 m_Renderer.DrawCube(t->position, glm::vec3(6.0f), glm::vec4(0.9f, 0.3f, 0.2f, 1.0f), 0.0f);
 
             m_Renderer.EndStream();
+
+            DrawHUD();
+
             m_Renderer.UnbindFrameBuffer();
+        }
+
+        // 2D overlay drawn with the renderer's orthographic pass.
+        void DrawHUD()
+        {
+            m_Renderer.Begin2D(kFbW, kFbH);
+
+            const glm::vec4 white(1.0f, 1.0f, 1.0f, 0.85f);
+
+            // Center crosshair.
+            m_Renderer.DrawQuad(glm::vec3(kFbW * 0.5f, kFbH * 0.5f, 0.0f), glm::vec2(44.0f, 4.0f), white);
+            m_Renderer.DrawQuad(glm::vec3(kFbW * 0.5f, kFbH * 0.5f, 0.0f), glm::vec2(4.0f, 44.0f), white);
+
+            // Corner status bars (demonstrates alpha-blended 2D sprites).
+            m_Renderer.DrawQuad(glm::vec3(180.0f, 90.0f, 0.0f),  glm::vec2(320.0f, 40.0f), glm::vec4(0.0f, 0.0f, 0.0f, 0.4f));
+            m_Renderer.DrawQuad(glm::vec3(180.0f, 90.0f, 0.0f),  glm::vec2(300.0f, 22.0f), glm::vec4(0.85f, 0.25f, 0.22f, 0.9f));
+            m_Renderer.DrawQuad(glm::vec3(180.0f, 140.0f, 0.0f), glm::vec2(320.0f, 40.0f), glm::vec4(0.0f, 0.0f, 0.0f, 0.4f));
+            m_Renderer.DrawQuad(glm::vec3(180.0f, 140.0f, 0.0f), glm::vec2(220.0f, 22.0f), glm::vec4(0.25f, 0.55f, 0.95f, 0.9f));
+
+            // Cursor brush marker (when hovering the viewport).
+            if (m_ViewportHovered)
+            {
+                const float px = (m_ViewportNDC.x * 0.5f + 0.5f) * kFbW;
+                const float py = (1.0f - (m_ViewportNDC.y * 0.5f + 0.5f)) * kFbH;
+                m_Renderer.DrawQuad(glm::vec3(px, py, 0.0f), glm::vec2(26.0f, 26.0f), glm::vec4(1.0f, 0.9f, 0.2f, 0.5f));
+            }
+
+            m_Renderer.End2D();
         }
 
         virtual void OnEvent(Event &e) override
         {
             EventDispatcher dispatcher(e);
             dispatcher.Dispatch<KeyPressedEvent>(BindEvent(WorldLayer::OnKeyPressed));
+            dispatcher.Dispatch<MouseScrollEvent>(BindEvent(WorldLayer::OnMouseScroll));
         }
 
         bool OnKeyPressed(KeyPressedEvent &e)
         {
             if (e.GetKeyCode() == KDot::Key::R)
-                SpawnBall(); // R re-drops the ball
+                SpawnBall();
+            return false;
+        }
+
+        bool OnMouseScroll(MouseScrollEvent &e)
+        {
+            m_Camera.ProcessScroll(e.GetYOffset());
             return false;
         }
 
@@ -195,35 +305,32 @@ namespace KDot
             ImGui::Begin("Inspector");
 
             ImGui::Text("FPS: %.1f  (%.2f ms)", io.Framerate, io.DeltaTime * 1000.0f);
-            ImGui::Text("Draw Calls: %d", m_Renderer.DrawCallCount);
-            ImGui::Text("Triangles: %d", m_Renderer.Triangles);
+            ImGui::Text("Draw Calls: %d   Triangles: %d", m_Renderer.DrawCallCount, m_Renderer.Triangles);
             ImGui::Separator();
 
             QualitySettings& q = QualitySettings::Get();
             ImGui::TextUnformatted("Fidelity (Iruna 0.0  <->  Elden 1.0)");
             if (ImGui::SliderFloat("##fidelity", &m_Fidelity, 0.0f, 1.0f, "%.2f"))
-                q.SetFidelity(m_Fidelity); // live: changes LOD bands / render distance immediately
+                q.SetFidelity(m_Fidelity);
             ImGui::Text("Render dist: %.0f   Chunk edge: %d", q.renderDistance, q.terrainChunkEdgeVerts);
-            ImGui::Text("Max LOD: %d   Shadows: %s", q.maxLODLevels, q.shadowsEnabled ? "on" : "off");
+            ImGui::Text("Max LOD: %d   Max lights: %d", q.maxLODLevels, q.maxLights);
 
             ImGui::Separator();
             ImGui::Text("Terrain: %zu chunks, %zu tris", m_Terrain.Chunks().size(), m_Terrain.TriangleCount());
             ImGui::InputInt("Seed", &m_Seed);
             if (ImGui::Button("Regenerate"))
-                RegenerateTerrain(); // rebuilds with the new chunk density / seed
+                RegenerateTerrain();
 
             ImGui::Separator();
-            ImGui::TextUnformatted("Sculpt (at world origin)");
-            ImGui::SliderFloat("Radius", &m_BrushRadius, 2.0f, 80.0f, "%.0f");
-            ImGui::SliderFloat("Strength", &m_BrushStrength, 1.0f, 40.0f, "%.0f");
-            const glm::vec2 brushXZ(0.0f, 0.0f);
-            if (ImGui::Button("Raise"))   m_Terrain.Sculpt(brushXZ, m_BrushRadius, m_BrushStrength, SculptMode::Raise);
-            ImGui::SameLine();
-            if (ImGui::Button("Lower"))   m_Terrain.Sculpt(brushXZ, m_BrushRadius, m_BrushStrength, SculptMode::Lower);
-            ImGui::SameLine();
-            if (ImGui::Button("Smooth"))  m_Terrain.Sculpt(brushXZ, m_BrushRadius, m_BrushStrength, SculptMode::Smooth);
-            ImGui::SameLine();
-            if (ImGui::Button("Flatten")) m_Terrain.Sculpt(brushXZ, m_BrushRadius, m_BrushStrength, SculptMode::Flatten);
+            ImGui::TextUnformatted("Lighting");
+            ImGui::SliderFloat("Sun", &m_Lights.sun.intensity, 0.0f, 3.0f, "%.2f");
+            ImGui::SliderFloat("Ambient", &m_Lights.ambient.intensity, 0.0f, 1.0f, "%.2f");
+            ImGui::SliderFloat("Fog", &m_Lights.fogDensity, 0.0f, 0.003f, "%.4f");
+
+            ImGui::Separator();
+            ImGui::TextUnformatted("Brush");
+            ImGui::SliderFloat("Radius", &m_BrushRadius, 4.0f, 100.0f, "%.0f");
+            ImGui::SliderFloat("Strength", &m_BrushStrength, 1.0f, 60.0f, "%.0f");
 
             ImGui::Separator();
             if (ImGui::Button("Drop ball (R)"))
@@ -233,14 +340,22 @@ namespace KDot
                 Rigidbody* rb = m_Registry.TryGet<Rigidbody>(m_Ball);
                 ImGui::Text("Ball y: %.1f  grounded: %s", t->position.y, (rb && rb->onGround) ? "yes" : "no");
             }
-            ImGui::TextDisabled("WASD to fly the camera");
+            ImGui::TextDisabled("WASD fly | right-drag look | scroll zoom");
+            ImGui::TextDisabled("left-click sculpt (Shift = lower)");
             ImGui::End();
 
-            // ---- Viewport -----------------------------------------------------
+            // ---- Viewport (also captures cursor state for picking) ------------
             ImGui::Begin("Viewport");
-            ImVec2 viewportPanelSize = ImGui::GetContentRegionAvail();
-            viewportSize = viewportPanelSize;
-            ImGui::Image((void *)m_Renderer.GetFrameBufferTexture(), viewportPanelSize, ImVec2(0, 1), ImVec2(1, 0));
+            ImVec2 panelSize = ImGui::GetContentRegionAvail();
+            ImGui::Image((void *)m_Renderer.GetFrameBufferTexture(), panelSize, ImVec2(0, 1), ImVec2(1, 0));
+
+            m_ViewportHovered = ImGui::IsItemHovered();
+            const ImVec2 imgMin = ImGui::GetItemRectMin();
+            const ImVec2 imgSize = ImGui::GetItemRectSize();
+            const ImVec2 m = ImGui::GetMousePos();
+            if (imgSize.x > 0.0f && imgSize.y > 0.0f)
+                m_ViewportNDC = Picking::PixelToNDC(glm::vec2(m.x - imgMin.x, m.y - imgMin.y),
+                                                    glm::vec2(imgSize.x, imgSize.y));
             ImGui::End();
 
             ImGui::End();

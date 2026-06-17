@@ -6,6 +6,7 @@
 #include <fstream>
 #include <Math/Vector.hpp>
 #include <Core/MeshData.hpp>
+#include <Light.hpp>
 #include <glm.hpp>
 #include <gtx/rotate_vector.hpp>
 #include <gtx/transform.hpp>
@@ -45,6 +46,14 @@ namespace KDot
         void UnbindFrameBuffer();
         void BeginStream(Camera &camera);
         void EndStream();
+        // Orthographic 2D pass for HUD / sprites. Coordinates are in pixels with
+        // (0,0) at the top-left of the given virtual size. Lighting + depth test
+        // are disabled and alpha blending enabled for the duration.
+        void Begin2D(float width, float height);
+        void End2D();
+        // Upload scene lighting (point lights are culled to the nearest few,
+        // capped by QualitySettings). Call once per frame inside BeginStream.
+        void SetLights(const LightManager &lights, const glm::vec3 &cameraPos);
         GLuint GetFrameBufferTexture() { return m_Texture; }
         void LoadTexture(const char *path);
         // Draw an arbitrary indexed mesh (e.g. a terrain chunk) with the active
@@ -70,6 +79,7 @@ namespace KDot
         void AddVertexBuffer();
         void AddIndexBuffer();
         void InitMeshBuffers();
+        void ApplyFrameUniforms(); // binds program + sets projection/view/unlit/camera
         int m_CurrentTextureIndex = 0;
         glm::vec4 m_QuadVertexPositions[4];
         glm::vec4 m_CubeVertexPositions[8];
@@ -78,6 +88,7 @@ namespace KDot
         uint32_t *QuadIndices;
 
         void StartBatch();
+        void ResetBatch();
         void NextBatch();
         void BindVertexBuffer();
         void UnbindVertexBuffer();
@@ -93,9 +104,24 @@ namespace KDot
         Vertex *m_QuadVertexBufferBase = nullptr;
         Vertex *m_QuadVertexBufferPtr = nullptr;
 
+        static constexpr int kMaxShaderPointLights = 16;
         GLint u_ProjectionMat;
         GLint u_ViewMat;
         GLint u_ModelMat;
+        // Lighting / mode uniform locations (cached at compile time).
+        GLint u_Unlit = -1;
+        GLint u_CameraPos = -1;
+        GLint u_AmbientColor = -1;
+        GLint u_AmbientIntensity = -1;
+        GLint u_SunDir = -1;
+        GLint u_SunColor = -1;
+        GLint u_SunIntensity = -1;
+        GLint u_PointCount = -1;
+        GLint u_FogColor = -1;
+        GLint u_FogDensity = -1;
+        glm::mat4 m_ActiveProjection = glm::mat4(1.0f);
+        int       m_UnlitMode = 0;
+        glm::vec3 m_CameraWorldPos = glm::vec3(0.0f);
         GLuint m_ShaderProgram;
         GLuint m_FrameBuffer;
         GLuint m_VertexArray;

@@ -10,12 +10,16 @@ The build folder holds a current build of the repository.
 
 ## Features
 
-- [ ] 2D Rendering
+- [X] 2D Rendering (orthographic sprite/HUD pass)
 - [X] 3D Rendering
+- [X] Lighting (ambient + directional sun + point lights, Blinn-Phong, fog)
+- [X] Mouse input + screen-ray picking (click-to-sculpt, look/zoom)
 - [X] Procedural Terrain (chunked, LOD, runtime sculpting)
 - [X] Physics (rigidbody, AABB/sphere, raycasts, terrain collision)
 - [X] Entity Component System
 - [X] Adjustable fidelity / LOD ("0.65" dial)
+- [ ] Grass / vegetation *(next)*
+- [ ] Texture splatting *(next)*
 - [ ] Audio
 - [ ] Animation
 - [X] Online/In-browser (Emscripten / WebGL2)
@@ -70,6 +74,22 @@ budget and texture sampling, so a settings menu only ever touches one call.
 - Semi-implicit Euler integration, **spatial-hash broadphase**, sequential-impulse
   resolution with friction and Baumgarte positional correction.
 - Heightfield ground collision and world raycasts (against colliders + terrain).
+
+## Rendering & input
+
+- **Lighting**: ambient + a directional "sun" + point lights (culled to the
+  nearest few, capped by the fidelity dial) with Blinn-Phong specular and
+  exp2 distance fog. Lights live in `LightManager` (plain data) and are turned
+  into shader uniforms by the renderer.
+- **2D pass**: `Renderer::Begin2D/End2D` switch to an orthographic, unlit,
+  alpha-blended mode for HUD/sprites (the demo draws a crosshair, status bars,
+  and a cursor brush marker).
+- **Mouse**: right-drag to look, scroll to zoom, and **left-click to sculpt**
+  the terrain at the picked point. Picking builds a world ray from the cursor
+  (`Picking::ScreenToRay`) and queries `PhysicsWorld::Raycast`.
+
+Demo controls: `WASD` fly · right-drag look · scroll zoom ·
+left-click sculpt (hold `Shift` to lower) · `R` re-drop the ball.
 
 ## Roadmap: cross-platform & WebGPU
 
