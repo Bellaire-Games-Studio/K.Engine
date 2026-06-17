@@ -20,6 +20,7 @@ option(USE_SDL2_MIXER "Force using SDL2_mixer as audio backend")
 #   - the place where your C/C++ source files are located
 #
 set(C_CXX_SOURCES_DIR_Physics "K.Engine.Physics/src")
+set(C_CXX_SOURCES_DIR_Terrain "K.Engine.Terrain/src")
 set(C_CXX_SOURCES_DIR_Graphics "K.Engine.Graphics/src")
 set(C_CXX_SOURCES_DIR_Audio "K.Engine.Audio/src")
 set(C_CXX_SOURCES_DIR_Core "K.Engine.Core/src")
@@ -33,6 +34,7 @@ set(C_CXX_SOURCES_DIR_imgui "ImGui")
 #   - the place where your C/C++ header files are located
 #
 set(C_CXX_HEADERS_DIR_Physics "K.Engine.Physics/include")
+set(C_CXX_HEADERS_DIR_Terrain "K.Engine.Terrain/include")
 set(C_CXX_HEADERS_DIR_Graphics "K.Engine.Graphics/include")
 set(C_CXX_HEADERS_DIR_Audio "K.Engine.Audio/include")
 set(C_CXX_HEADERS_DIR_Core "K.Engine.Core/include")
@@ -83,6 +85,7 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_PROFILE "${CMAKE_BINARY_DIR}/bin")
 
 set(SOURCE_DATA_DIR        ${CMAKE_CURRENT_SOURCE_DIR}/${ASSETS_DIR})
 set(SOURCE_CXX_INCLUDE_DIR_Physics ${CMAKE_CURRENT_SOURCE_DIR}/${C_CXX_HEADERS_DIR_Physics})
+set(SOURCE_CXX_INCLUDE_DIR_Terrain ${CMAKE_CURRENT_SOURCE_DIR}/${C_CXX_HEADERS_DIR_Terrain})
 set(SOURCE_CXX_INCLUDE_DIR_Graphics ${CMAKE_CURRENT_SOURCE_DIR}/${C_CXX_HEADERS_DIR_Graphics})
 set(SOURCE_CXX_INCLUDE_DIR_Audio ${CMAKE_CURRENT_SOURCE_DIR}/${C_CXX_HEADERS_DIR_Audio})
 set(SOURCE_CXX_INCLUDE_DIR_Core ${CMAKE_CURRENT_SOURCE_DIR}/${C_CXX_HEADERS_DIR_Core})
@@ -93,6 +96,7 @@ set(IMGUI                          ${CMAKE_CURRENT_SOURCE_DIR}/${C_CXX_HEADERS_D
 set(glm                           ${CMAKE_CURRENT_SOURCE_DIR}/glm)          
 
 set(SOURCE_CXX_SRC_DIR_Physics     ${CMAKE_CURRENT_SOURCE_DIR}/${C_CXX_SOURCES_DIR_Physics})
+set(SOURCE_CXX_SRC_DIR_Terrain     ${CMAKE_CURRENT_SOURCE_DIR}/${C_CXX_SOURCES_DIR_Terrain})
 set(SOURCE_CXX_SRC_DIR_Graphics    ${CMAKE_CURRENT_SOURCE_DIR}/${C_CXX_SOURCES_DIR_Graphics})
 set(SOURCE_CXX_SRC_DIR_Audio       ${CMAKE_CURRENT_SOURCE_DIR}/${C_CXX_SOURCES_DIR_Audio})
 set(SOURCE_CXX_SRC_DIR_Core        ${CMAKE_CURRENT_SOURCE_DIR}/${C_CXX_SOURCES_DIR_Core})
@@ -105,7 +109,7 @@ set(SOURCE_CXX_SRC_DIR_imgui       ${CMAKE_CURRENT_SOURCE_DIR}/${C_CXX_SOURCES_D
 # Source Files are Curated Here
 file(
     GLOB_RECURSE SOURCE_CXX_FILES
-    "${SOURCE_CXX_SRC_DIR_Physics}/*.cpp" "${SOURCE_CXX_SRC_DIR_Graphics}/*.cpp" "${SOURCE_CXX_SRC_DIR_imgui}/*.cpp" "${SOURCE_CXX_SRC_DIR_Audio}/*.cpp" "${SOURCE_CXX_SRC_DIR_Core}/*.cpp" "${SOURCE_CXX_SRC_DIR_Common}/*.cpp" "${SOURCE_CXX_SRC_DIR_Editor}/*.cpp" "${SOURCE_CXX_SRC_DIR_Input}/*.cpp"
+    "${SOURCE_CXX_SRC_DIR_Physics}/*.cpp" "${SOURCE_CXX_SRC_DIR_Terrain}/*.cpp" "${SOURCE_CXX_SRC_DIR_Graphics}/*.cpp" "${SOURCE_CXX_SRC_DIR_imgui}/*.cpp" "${SOURCE_CXX_SRC_DIR_Audio}/*.cpp" "${SOURCE_CXX_SRC_DIR_Core}/*.cpp" "${SOURCE_CXX_SRC_DIR_Common}/*.cpp" "${SOURCE_CXX_SRC_DIR_Editor}/*.cpp" "${SOURCE_CXX_SRC_DIR_Input}/*.cpp"
 )
 
 # Include Directories
@@ -166,7 +170,7 @@ endif() # Emscripten
 ######################################################################
 # Set include directory
 ######################################################################
-target_include_directories(${OutputExecutable} PRIVATE ${IMGUI} ${glm} ${SOURCE_CXX_INCLUDE_DIR_Physics} ${SOURCE_CXX_INCLUDE_DIR_Graphics} ${SOURCE_CXX_INCLUDE_DIR_Audio} ${SOURCE_CXX_INCLUDE_DIR_Core} ${SOURCE_CXX_INCLUDE_DIR_Common} ${SOURCE_CXX_INCLUDE_DIR_Editor} ${SOURCE_CXX_INCLUDE_DIR_Input})
+target_include_directories(${OutputExecutable} PRIVATE ${IMGUI} ${glm} ${SOURCE_CXX_INCLUDE_DIR_Physics} ${SOURCE_CXX_INCLUDE_DIR_Terrain} ${SOURCE_CXX_INCLUDE_DIR_Graphics} ${SOURCE_CXX_INCLUDE_DIR_Audio} ${SOURCE_CXX_INCLUDE_DIR_Core} ${SOURCE_CXX_INCLUDE_DIR_Common} ${SOURCE_CXX_INCLUDE_DIR_Editor} ${SOURCE_CXX_INCLUDE_DIR_Input})
 
 
 

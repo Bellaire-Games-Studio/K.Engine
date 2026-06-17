@@ -1,4 +1,6 @@
 #include <Renderer.hpp>
+#include <Core/QualitySettings.hpp>
+#include <cstddef>
 #define STB_IMAGE_IMPLEMENTATION
 #include <Image/stb_image.h>
 #define GLTextureMapIndex(x) (x == 0 ? GL_TEXTURE0 : x == 1 ? GL_TEXTURE1 : x == 2 ? GL_TEXTURE2 : x == 3 ? GL_TEXTURE3 : x == 4 ? GL_TEXTURE4 : x == 5 ? GL_TEXTURE5 : x == 6 ? GL_TEXTURE6 : x == 7 ? GL_TEXTURE7 : x == 8 ? GL_TEXTURE8 : x == 9 ? GL_TEXTURE9 : x == 10 ? GL_TEXTURE10 : x == 11 ? GL_TEXTURE11 : x == 12 ? GL_TEXTURE12 : x == 13 ? GL_TEXTURE13 : x == 14 ? GL_TEXTURE14 : x == 15 ? GL_TEXTURE15 : x == 16 ? GL_TEXTURE16 : x == 17 ? GL_TEXTURE17 : x == 18 ? GL_TEXTURE18 : x == 19 ? GL_TEXTURE19 : x == 20 ? GL_TEXTURE20 : x == 21 ? GL_TEXTURE21 : x == 22 ? GL_TEXTURE22 : x == 23 ? GL_TEXTURE23 : x == 24 ? GL_TEXTURE24 : x == 25 ? GL_TEXTURE25 : x == 26 ? GL_TEXTURE26 : x == 27 ? GL_TEXTURE27 : x == 28 ? GL_TEXTURE28 : x == 29 ? GL_TEXTURE29 : x == 30 ? GL_TEXTURE30 : x == 31 ? GL_TEXTURE31 : 0)
@@ -9,6 +11,12 @@ namespace KDot
     Renderer::~Renderer()
     {
         glDeleteProgram(m_ShaderProgram);
+        if (m_MeshBuffersReady)
+        {
+            glDeleteVertexArrays(1, &m_MeshVAO);
+            glDeleteBuffers(1, &m_MeshVBO);
+            glDeleteBuffers(1, &m_MeshIBO);
+        }
     }
     bool Renderer::InitShader(const char **ShaderSource, GLenum type)
     {
@@ -170,6 +178,55 @@ namespace KDot
         m_QuadIndexCount += 36;
         QuadCount+= 6;
     }
+    void Renderer::InitMeshBuffers()
+    {
+        glGenVertexArrays(1, &m_MeshVAO);
+        glGenBuffers(1, &m_MeshVBO);
+        glGenBuffers(1, &m_MeshIBO);
+
+        glBindVertexArray(m_MeshVAO);
+        glBindBuffer(GL_ARRAY_BUFFER, m_MeshVBO);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_MeshIBO);
+
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(MeshVertex), (void *)offsetof(MeshVertex, position));
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, sizeof(MeshVertex), (void *)offsetof(MeshVertex, color));
+        glEnableVertexAttribArray(2);
+        glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, sizeof(MeshVertex), (void *)offsetof(MeshVertex, normal));
+        glEnableVertexAttribArray(3);
+        glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, sizeof(MeshVertex), (void *)offsetof(MeshVertex, texCoord));
+        glEnableVertexAttribArray(4);
+        glVertexAttribIPointer(4, 1, GL_UNSIGNED_INT, sizeof(MeshVertex), (void *)offsetof(MeshVertex, texIndex));
+
+        m_MeshBuffersReady = true;
+    }
+    void Renderer::DrawMesh(const MeshData &mesh)
+    {
+        if (mesh.indices.empty())
+            return;
+        if (!m_MeshBuffersReady)
+            InitMeshBuffers();
+
+        glUseProgram(m_ShaderProgram);
+
+        // Far plane follows the fidelity dial so distant terrain isn't clipped.
+        const float farPlane = QualitySettings::Get().renderDistance;
+        glm::mat4 projection = glm::perspective(glm::radians(cameraZoom), 16.0f / 9.0f, 0.1f, farPlane);
+        glUniformMatrix4fv(u_ProjectionMat, 1, GL_FALSE, &projection[0][0]);
+        glUniformMatrix4fv(u_ViewMat, 1, GL_FALSE, &viewMatrix[0][0]);
+
+        glBindVertexArray(m_MeshVAO);
+        glBindBuffer(GL_ARRAY_BUFFER, m_MeshVBO);
+        glBufferData(GL_ARRAY_BUFFER, mesh.vertices.size() * sizeof(MeshVertex), mesh.vertices.data(), GL_DYNAMIC_DRAW);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_MeshIBO);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, mesh.indices.size() * sizeof(uint32_t), mesh.indices.data(), GL_DYNAMIC_DRAW);
+
+        glDrawElements(GL_TRIANGLES, (GLsizei)mesh.indices.size(), GL_UNSIGNED_INT, 0);
+
+        DrawCallCount++;
+        Triangles += (int)mesh.TriangleCount();
+    }
     void Renderer::NextBatch()
     {
         Flush();
@@ -186,7 +243,7 @@ namespace KDot
     }
     void Renderer::Flush()
     {
-        glm::mat4 projection = glm::perspective(glm::radians(cameraZoom), (float)16 / (float)9, 0.1f, 100.0f);
+        glm::mat4 projection = glm::perspective(glm::radians(cameraZoom), (float)16 / (float)9, 0.1f, QualitySettings::Get().renderDistance);
         glUniformMatrix4fv(u_ProjectionMat, 1, GL_FALSE, &projection[0][0]);
         glUniformMatrix4fv(u_ViewMat, 1, GL_FALSE, &viewMatrix[0][0]);
 
