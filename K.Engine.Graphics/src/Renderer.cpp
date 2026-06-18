@@ -231,6 +231,41 @@ namespace KDot
         DrawCallCount++;
         Triangles += (int)mesh.TriangleCount();
     }
+
+    void Renderer::DrawMesh(const MeshData &mesh, const glm::mat4 &model, const glm::vec4 &color, int shadeMode)
+    {
+        if (mesh.indices.empty())
+            return;
+        if (!m_MeshBuffersReady)
+            InitMeshBuffers();
+
+        // CPU-transform into world space (the shared shader has no model matrix).
+        m_MeshScratch.resize(mesh.vertices.size());
+        const glm::mat3 nrm = glm::transpose(glm::inverse(glm::mat3(model)));
+        for (size_t i = 0; i < mesh.vertices.size(); ++i)
+        {
+            MeshVertex v = mesh.vertices[i];
+            v.position = glm::vec3(model * glm::vec4(v.position, 1.0f));
+            v.normal = glm::normalize(nrm * v.normal);
+            v.color = color;
+            m_MeshScratch[i] = v;
+        }
+
+        ApplyFrameUniforms();
+        if (u_ShadeMode >= 0)
+            glUniform1i(u_ShadeMode, shadeMode);
+
+        glBindVertexArray(m_MeshVAO);
+        glBindBuffer(GL_ARRAY_BUFFER, m_MeshVBO);
+        glBufferData(GL_ARRAY_BUFFER, m_MeshScratch.size() * sizeof(MeshVertex), m_MeshScratch.data(), GL_DYNAMIC_DRAW);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_MeshIBO);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, mesh.indices.size() * sizeof(uint32_t), mesh.indices.data(), GL_DYNAMIC_DRAW);
+
+        glDrawElements(GL_TRIANGLES, (GLsizei)mesh.indices.size(), GL_UNSIGNED_INT, 0);
+
+        DrawCallCount++;
+        Triangles += (int)mesh.TriangleCount();
+    }
     void Renderer::NextBatch()
     {
         Flush(); // Flush() now empties the batch, so the next quad starts clean

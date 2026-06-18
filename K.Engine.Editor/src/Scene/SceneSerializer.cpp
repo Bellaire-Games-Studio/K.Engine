@@ -2,6 +2,7 @@
 #include <Core/Transform.hpp>
 #include <Core/SceneComponents.hpp>
 #include <Script/ScriptBehavior.hpp>
+#include <Asset/ModelLoader.hpp>
 #include <Rigidbody.hpp>
 #include <algorithm>
 #include <fstream>
@@ -116,6 +117,11 @@ namespace KDot
                 o << "collider " << (int)c->type << ' ';
                 WriteVec3(o, c->halfExtents); o << ' ' << c->radius << ' ';
                 WriteVec3(o, c->localOffset); o << ' ' << (c->isTrigger ? 1 : 0) << '\n';
+            }
+            if (ModelMesh* mm = reg.TryGet<ModelMesh>(e))
+            {
+                o << "mesh " << mm->color.r << ' ' << mm->color.g << ' ' << mm->color.b << ' ' << mm->color.a
+                  << ' ' << mm->source << '\n';
             }
             if (Script* s = reg.TryGet<Script>(e))
             {
@@ -240,6 +246,18 @@ namespace KDot
                 c.type = (ColliderType)type;
                 c.isTrigger = trig != 0;
                 reg.Emplace<Collider>(cur, c);
+            }
+            else if (cur != ecs::kNull && key == "mesh")
+            {
+                ModelMesh mm;
+                ls >> mm.color.r >> mm.color.g >> mm.color.b >> mm.color.a;
+                std::string rest;
+                std::getline(ls, rest);
+                mm.source = Trim(rest);
+                mm.data = std::make_shared<MeshData>();
+                if (!mm.source.empty())
+                    ModelLoader::LoadOBJFile(mm.source, *mm.data);
+                reg.Emplace<ModelMesh>(cur, mm);
             }
             else if (cur != ecs::kNull && key == "script")
             {

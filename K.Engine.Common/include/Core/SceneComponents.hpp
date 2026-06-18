@@ -1,7 +1,9 @@
 #pragma once
 #include <string>
+#include <memory>
 #include <glm.hpp>
 #include <EntitityComponentSystem/ECS.hpp>
+#include <Core/MeshData.hpp>
 
 namespace KDot
 {
@@ -41,5 +43,15 @@ namespace KDot
         glm::vec3 color{1.0f, 0.85f, 0.6f};
         float     intensity = 2.0f;
         float     radius     = 140.0f;
+    };
+
+    // An imported triangle mesh (e.g. a loaded OBJ). The geometry is shared
+    // (shared_ptr) so duplicating an entity is cheap; 'source' is the file it was
+    // loaded from (re-loaded on scene load), and 'color' tints it.
+    struct ModelMesh
+    {
+        std::shared_ptr<MeshData> data;
+        std::string               source;
+        glm::vec4                 color{0.80f, 0.80f, 0.85f, 1.0f};
     };
 }

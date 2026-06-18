@@ -18,6 +18,7 @@
 #include <Core/Picking.hpp>
 #include <Scene/SceneSerializer.hpp>
 #include <Script/ScriptBehavior.hpp>
+#include <Asset/ModelLoader.hpp>
 #include <gtc/quaternion.hpp>
 #include <algorithm>
 #include <cstring>
@@ -86,6 +87,7 @@ namespace KDot
         bool        m_LeftPrev = false;
         int         m_NextCube = 1;
         int         m_NextLight = 1;
+        int         m_NextModel = 1;
 
         PlayState   m_Play = PlayState::Editing;
         std::string m_Snapshot;                 // serialized scene captured on Play
@@ -160,6 +162,19 @@ namespace KDot
                 m_Registry.Emplace<Prop>(barrel, Prop{glm::vec3(2.0f, 2.0f, 12.0f), glm::vec4(0.85f, 0.3f, 0.2f, 1.0f)});
                 m_Registry.Emplace<KDot::Name>(barrel, KDot::Name{"Barrel"});
                 m_Registry.Emplace<Parent>(barrel).value = base;
+            }
+
+            // Imported-model demo: an OBJ "gem" that spins on Play.
+            {
+                ecs::Entity gem = m_Registry.Create();
+                Transform gt(glm::vec3(60.0f, m_Terrain.HeightAt(60.0f, 20.0f) + 18.0f, 20.0f));
+                gt.scale = glm::vec3(9.0f);
+                m_Registry.Emplace<Transform>(gem, gt);
+                LoadModelInto(gem, "Assets/Models/octahedron.obj");
+                if (ModelMesh* mm = m_Registry.TryGet<ModelMesh>(gem))
+                    mm->color = glm::vec4(0.45f, 0.8f, 0.95f, 1.0f);
+                m_Registry.Emplace<KDot::Name>(gem, KDot::Name{"Gem (model)"});
+                m_Registry.Emplace<Script>(gem).name = "Spin";
             }
 
             Select(m_Ball);
@@ -262,6 +277,32 @@ namespace KDot
             return e;
         }
 
+        // Load (or reload) an OBJ model into an entity's ModelMesh component.
+        void LoadModelInto(ecs::Entity e, const std::string& path)
+        {
+            ModelMesh* mm = m_Registry.TryGet<ModelMesh>(e);
+            if (!mm)
+                mm = &m_Registry.Emplace<ModelMesh>(e);
+            if (!mm->data)
+                mm->data = std::make_shared<MeshData>();
+            mm->source = path;
+            ModelLoader::LoadOBJFile(path, *mm->data); // leaves empty mesh on failure
+        }
+
+        ecs::Entity SpawnModel(const std::string& path = "Assets/Models/octahedron.obj")
+        {
+            ecs::Entity e = m_Registry.Create();
+            Transform t(SpawnPoint(60.0f));
+            t.scale = glm::vec3(8.0f);
+            m_Registry.Emplace<Transform>(e, t);
+            LoadModelInto(e, path);
+            if (ModelMesh* mm = m_Registry.TryGet<ModelMesh>(e))
+                mm->color = glm::vec4(0.50f, 0.80f, 0.95f, 1.0f);
+            m_Registry.Emplace<KDot::Name>(e, KDot::Name{"Model " + std::to_string(m_NextModel++)});
+            Select(e);
+            return e;
+        }
+
         ecs::Entity SpawnLight() // editor "+ Light": in front of the camera
         {
             return SpawnLight(SpawnPoint(45.0f) + glm::vec3(0.0f, 18.0f, 0.0f),
@@ -289,6 +330,7 @@ namespace KDot
             if (LightSource* l = m_Registry.TryGet<LightSource>(s)) { LightSource c = *l; m_Registry.Emplace<LightSource>(e, c); }
             if (Rigidbody* r = m_Registry.TryGet<Rigidbody>(s)) { Rigidbody c = *r; m_Registry.Emplace<Rigidbody>(e, c); }
             if (Collider* col = m_Registry.TryGet<Collider>(s)) { Collider c = *col; m_Registry.Emplace<Collider>(e, c); }
+            if (ModelMesh* mm = m_Registry.TryGet<ModelMesh>(s)) { ModelMesh c = *mm; m_Registry.Emplace<ModelMesh>(e, c); } // shares geometry
             if (Script* sc = m_Registry.TryGet<Script>(s))
             {
                 // Capture before Emplace (which may grow the Script pool); the
@@ -573,6 +615,12 @@ namespace KDot
                 m_Renderer.DrawCube(world, p.color);
             });
 
+            // Imported models, lit, at their world transform.
+            m_Registry.View<Transform, ModelMesh>([&](ecs::Entity e, Transform&, ModelMesh& mm) {
+                if (mm.data && !mm.data->Empty())
+                    m_Renderer.DrawMesh(*mm.data, WorldMatrix(m_Registry, e), mm.color, 0);
+            });
+
             // Small emissive markers so lights are visible / locatable in the scene.
             m_Registry.View<Transform, LightSource>([&](ecs::Entity e, Transform&, LightSource& ls) {
                 m_Renderer.DrawCube(WorldPosition(m_Registry, e), glm::vec3(3.0f), glm::vec4(ls.color, 1.0f), 0.0f);
@@ -687,6 +735,7 @@ namespace KDot
                 {
                     if (ImGui::MenuItem("Cube"))  SpawnCube();
                     if (ImGui::MenuItem("Light")) SpawnLight();
+                    if (ImGui::MenuItem("Model (OBJ sample)")) SpawnModel();
                     ImGui::EndMenu();
                 }
 
@@ -802,6 +851,7 @@ namespace KDot
                 KDot::Name* n = m_Registry.TryGet<KDot::Name>(e);
                 const char* type = m_Registry.Has<LightSource>(e) ? "light"
                                  : m_Registry.Has<Rigidbody>(e)   ? "body"
+                                 : m_Registry.Has<ModelMesh>(e)   ? "mesh"
                                  : m_Registry.Has<Prop>(e)        ? "prop"
                                                                   : "node";
                 const bool hasKids = children.count(e) && !children[e].empty();
@@ -901,7 +951,7 @@ namespace KDot
         }
 
         // Component-by-component editor for a single entity.
-        enum class Rem { None, Prop, Light, Rb, Col, Scr };
+        enum class Rem { None, Prop, Light, Rb, Col, Scr, Mesh };
 
         void DrawEntityProps(ecs::Entity e)
         {
@@ -1014,6 +1064,24 @@ namespace KDot
                 }
             }
 
+            if (ModelMesh* mm = m_Registry.TryGet<ModelMesh>(e))
+            {
+                if (ImGui::CollapsingHeader("Mesh (model)", ImGuiTreeNodeFlags_DefaultOpen))
+                {
+                    char buf[256];
+                    std::strncpy(buf, mm->source.c_str(), sizeof(buf) - 1);
+                    buf[sizeof(buf) - 1] = '\0';
+                    if (ImGui::InputText("Source", buf, sizeof(buf)))
+                        mm->source = buf;
+                    ImGui::SameLine();
+                    if (ImGui::Button("Load"))
+                        LoadModelInto(e, mm->source);
+                    ImGui::ColorEdit4("Tint", &mm->color.x);
+                    ImGui::Text("%zu triangles", mm->data ? mm->data->TriangleCount() : (std::size_t)0);
+                    if (ImGui::SmallButton("Remove Mesh")) toRemove = Rem::Mesh;
+                }
+            }
+
             if (Script* sc = m_Registry.TryGet<Script>(e))
             {
                 if (ImGui::CollapsingHeader("Script", ImGuiTreeNodeFlags_DefaultOpen))
@@ -1047,6 +1115,7 @@ namespace KDot
                 case Rem::Rb:    m_Registry.Remove<Rigidbody>(e); break;
                 case Rem::Col:   m_Registry.Remove<Collider>(e); break;
                 case Rem::Scr:   m_Registry.Remove<Script>(e); break;
+                case Rem::Mesh:  m_Registry.Remove<ModelMesh>(e); break;
                 case Rem::None:  break;
             }
 
@@ -1056,6 +1125,7 @@ namespace KDot
             if (!m_Registry.Has<LightSource>(e)) { if (ImGui::Button("Light"))     m_Registry.Emplace<LightSource>(e); ImGui::SameLine(); }
             if (!m_Registry.Has<Rigidbody>(e))   { if (ImGui::Button("Rigidbody")) m_Registry.Emplace<Rigidbody>(e); ImGui::SameLine(); }
             if (!m_Registry.Has<Script>(e))      { if (ImGui::Button("Script"))    m_Registry.Emplace<Script>(e); ImGui::SameLine(); }
+            if (!m_Registry.Has<ModelMesh>(e))   { if (ImGui::Button("Mesh"))      m_Registry.Emplace<ModelMesh>(e); ImGui::SameLine(); }
             if (!m_Registry.Has<Collider>(e))    { if (ImGui::Button("Collider"))  m_Registry.Emplace<Collider>(e, Collider::MakeBox(glm::vec3(3.0f))); }
             ImGui::NewLine();
 

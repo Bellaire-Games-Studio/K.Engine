@@ -56,6 +56,9 @@ namespace KDot
         // separate from the quad/cube batch above. Call between BeginStream and
         // EndStream so the view/projection match the rest of the frame.
         void DrawMesh(const MeshData &mesh);
+        // Draw a mesh transformed by 'model' (CPU-transformed like the cube
+        // batch), flat-tinted with 'color', using the given shade mode (0 = lit).
+        void DrawMesh(const MeshData &mesh, const glm::mat4 &model, const glm::vec4 &color, int shadeMode = 0);
         void DrawCube(const glm::vec3 &position, const glm::vec3 &size, const glm::vec4 &color, float angle, unsigned int textureIndex = 0);
         // Draw a unit cube transformed by an arbitrary matrix (hierarchical world
         // transforms, gizmos). Normals are carried through the matrix.
@@ -82,7 +85,7 @@ namespace KDot
         glm::vec4 m_CubeVertexPositions[8];
         glm::vec4 m_CubeVertexNormals[8];
         glm::vec2 m_CubeVertexTexCoords[4];
-        uint32_t *QuadIndices;
+        uint32_t *QuadIndices = nullptr;
 
         void StartBatch();
         void ResetBatch();
@@ -100,9 +103,9 @@ namespace KDot
         Vertex *m_QuadVertexBufferPtr = nullptr;
 
         static constexpr int kMaxShaderPointLights = 16;
-        GLint u_ProjectionMat;
-        GLint u_ViewMat;
-        GLint u_ModelMat;
+        GLint u_ProjectionMat = -1;
+        GLint u_ViewMat = -1;
+        GLint u_ModelMat = -1;
         // Lighting / mode uniform locations (cached at compile time).
         GLint u_ShadeMode = -1; // 0=lit vertex colour, 1=procedural terrain, 2=unlit 2D
         GLint u_CameraPos = -1;
@@ -117,23 +120,24 @@ namespace KDot
         glm::mat4 m_ActiveProjection = glm::mat4(1.0f);
         int       m_ShadeMode = 0;
         glm::vec3 m_CameraWorldPos = glm::vec3(0.0f);
-        GLuint m_ShaderProgram;
-        GLuint m_FrameBuffer;
-        GLuint m_VertexArray;
-        GLuint m_VertexBuffer;
-        GLuint m_RenderBuffer;
-        GLuint m_Texture;
+        GLuint m_ShaderProgram = 0; // 0 => Compile() creates it (uninit'd handle skipped creation)
+        GLuint m_FrameBuffer = 0;
+        GLuint m_VertexArray = 0;
+        GLuint m_VertexBuffer = 0;
+        GLuint m_RenderBuffer = 0;
+        GLuint m_Texture = 0;
         // Dedicated buffers for DrawMesh (terrain / arbitrary indexed geometry).
         GLuint m_MeshVAO = 0;
         GLuint m_MeshVBO = 0;
         GLuint m_MeshIBO = 0;
         bool   m_MeshBuffersReady = false;
+        std::vector<MeshVertex> m_MeshScratch; // CPU-transform buffer for DrawMesh(model)
         glm::mat4 viewMatrix;
         float cameraZoom = 90.0f;
         float m_Height = 1280.0f;
         float m_Width = 720.0f;
-        char *m_VertexShader;
-        char *m_FragmentShader;
+        char *m_VertexShader = nullptr;
+        char *m_FragmentShader = nullptr;
         bool CreateProgram();
     };
 

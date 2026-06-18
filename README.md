@@ -21,6 +21,7 @@ The build folder holds a current build of the repository.
 - [X] Entity Component System
 - [X] Scene editor: World Explorer (parent/child tree) + Properties (per-component) inspector
 - [X] Parent/child hierarchy (relative transforms; re-parent keeps world position)
+- [X] Model import (OBJ -> `ModelMesh`; glTF planned)
 - [X] Play / Pause / Stop (physics + scripts frozen while editing; non-destructive)
 - [X] Scene save / load (`.kscene` text format)
 - [X] C++ scripting (`ScriptBehavior` behaviours with authored parameters, native + web)
