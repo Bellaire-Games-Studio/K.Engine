@@ -5,6 +5,8 @@
 
 namespace KDot
 {
+    class ScriptBehavior;
+
     // Plain environment/world settings that live outside the ECS (lighting, fog,
     // terrain seed, grass). Kept graphics-API-agnostic so the serializer has no
     // dependency on the renderer; the app maps this to/from its LightManager etc.
@@ -34,5 +36,8 @@ namespace KDot
 
         bool Save(const std::string& path, ecs::Registry& reg, const SceneEnv& env);
         bool Load(const std::string& path, ecs::Registry& reg, SceneEnv& env);
+
+        // Copy a behaviour's authored parameters (for entity duplication).
+        void CopyScriptParams(ScriptBehavior& from, ScriptBehavior& to);
     }
 }

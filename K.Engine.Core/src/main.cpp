@@ -39,6 +39,22 @@ namespace KDot
     //  Controls: WASD fly · right-drag look · scroll zoom · left-click =
     //            select (Select tool) or sculpt (Sculpt tool) · R re-drop ball
     // -------------------------------------------------------------------------
+    namespace
+    {
+        // Draws a behaviour's declared parameters as editable widgets.
+        struct ImGuiParams : ScriptParams
+        {
+            void Float(const char* n, float& v, float mn, float mx) override
+            {
+                if (mx > mn) ImGui::SliderFloat(n, &v, mn, mx);
+                else         ImGui::DragFloat(n, &v, 0.1f);
+            }
+            void Int(const char* n, int& v) override { ImGui::DragInt(n, &v); }
+            void Bool(const char* n, bool& v) override { ImGui::Checkbox(n, &v); }
+            void Vec3(const char* n, glm::vec3& v) override { ImGui::DragFloat3(n, &v.x, 0.05f); }
+        };
+    }
+
     class WorldLayer : public Layer
     {
         Renderer      m_Renderer;
@@ -252,7 +268,22 @@ namespace KDot
             if (LightSource* l = m_Registry.TryGet<LightSource>(s)) { LightSource c = *l; m_Registry.Emplace<LightSource>(e, c); }
             if (Rigidbody* r = m_Registry.TryGet<Rigidbody>(s)) { Rigidbody c = *r; m_Registry.Emplace<Rigidbody>(e, c); }
             if (Collider* col = m_Registry.TryGet<Collider>(s)) { Collider c = *col; m_Registry.Emplace<Collider>(e, c); }
-            if (Script* sc = m_Registry.TryGet<Script>(s))      { m_Registry.Emplace<Script>(e).name = sc->name; } // name only
+            if (Script* sc = m_Registry.TryGet<Script>(s))
+            {
+                // Capture before Emplace (which may grow the Script pool); the
+                // behaviour instance is heap-owned, so this raw pointer survives.
+                const std::string  sname = sc->name;
+                ScriptBehavior*    src   = sc->instance.get();
+                Script& ns = m_Registry.Emplace<Script>(e);
+                ns.name = sname;
+                ns.instance = ScriptRegistry::Get().Create(sname);
+                if (ns.instance)
+                {
+                    ns.instance->Attach(&m_Registry, e);
+                    if (src)
+                        SceneSerializer::CopyScriptParams(*src, *ns.instance);
+                }
+            }
 
             std::string base = m_Registry.TryGet<KDot::Name>(s) ? m_Registry.TryGet<KDot::Name>(s)->value : "Entity";
             m_Registry.Emplace<KDot::Name>(e, KDot::Name{base + " copy"});
@@ -366,8 +397,20 @@ namespace KDot
             m_Play = PlayState::Editing;
         }
 
-        // Instantiate + tick every Script behaviour for one simulated frame.
-        void UpdateScripts(float dt)
+        // (Re)create a behaviour instance with default params for an entity.
+        void AttachScript(ecs::Entity e, const std::string& name)
+        {
+            Script& s = m_Registry.Emplace<Script>(e);
+            s.name = name;
+            s.started = false;
+            s.instance = ScriptRegistry::Get().Create(name);
+            if (s.instance)
+                s.instance->Attach(&m_Registry, e);
+        }
+
+        // Make sure every named script has a live instance, so its parameters can
+        // be edited and serialized even while the scene is only being edited.
+        void EnsureScriptInstances()
         {
             m_Registry.View<Script>([&](ecs::Entity e, Script& s) {
                 if (!s.instance && !s.name.empty())
@@ -376,6 +419,13 @@ namespace KDot
                     if (s.instance)
                         s.instance->Attach(&m_Registry, e);
                 }
+            });
+        }
+
+        // Tick every Script behaviour for one simulated frame.
+        void UpdateScripts(float dt)
+        {
+            m_Registry.View<Script>([&](ecs::Entity e, Script& s) {
                 if (s.instance && !s.started)
                 {
                     s.instance->OnStart();
@@ -457,6 +507,7 @@ namespace KDot
 
             // Physics + scripts only advance while Playing; the editor is frozen.
             const bool simulate = (m_Play == PlayState::Playing);
+            EnsureScriptInstances(); // so params are live for the inspector/save
             m_Terrain.Update(m_Camera.m_Position);
             if (simulate)
             {
@@ -907,18 +958,20 @@ namespace KDot
                     if (ImGui::BeginCombo("Behaviour", current.c_str()))
                     {
                         for (const std::string& nm : ScriptRegistry::Get().Names())
-                        {
                             if (ImGui::Selectable(nm.c_str(), nm == sc->name))
-                            {
-                                sc->name = nm;
-                                sc->instance.reset(); // rebind on next play
-                                sc->started = false;
-                            }
-                        }
+                                AttachScript(e, nm); // fresh instance w/ default params
                         ImGui::EndCombo();
                     }
-                    ImGui::TextDisabled("%s", sc->instance ? "running"
-                                              : (m_Play == PlayState::Editing ? "idle (press Play)" : "not started"));
+                    // Script-authored parameters (declared via OnInspect).
+                    if (sc->instance)
+                    {
+                        ImGui::Separator();
+                        ImGui::TextDisabled("Parameters");
+                        ImGuiParams vis;
+                        sc->instance->OnInspect(vis);
+                    }
+                    ImGui::TextDisabled("%s", sc->started ? "running"
+                                              : (m_Play == PlayState::Editing ? "idle (press Play)" : "ready"));
                     if (ImGui::SmallButton("Remove Script")) toRemove = Rem::Scr;
                 }
             }

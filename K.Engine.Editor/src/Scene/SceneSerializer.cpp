@@ -7,6 +7,7 @@
 #include <fstream>
 #include <sstream>
 #include <vector>
+#include <unordered_map>
 
 namespace KDot
 {
@@ -21,6 +22,30 @@ namespace KDot
             std::size_t b = s.find_last_not_of(" \t\r\n");
             return a == std::string::npos ? std::string() : s.substr(a, b - a + 1);
         }
+
+        // Writes each declared script parameter as a "sparam <name> <values...>" line.
+        struct SaveParams : ScriptParams
+        {
+            std::ostream& o;
+            explicit SaveParams(std::ostream& os) : o(os) {}
+            void Float(const char* n, float& v, float, float) override { o << "sparam " << n << ' ' << v << '\n'; }
+            void Int(const char* n, int& v) override { o << "sparam " << n << ' ' << v << '\n'; }
+            void Bool(const char* n, bool& v) override { o << "sparam " << n << ' ' << (v ? 1 : 0) << '\n'; }
+            void Vec3(const char* n, glm::vec3& v) override { o << "sparam " << n << ' ' << v.x << ' ' << v.y << ' ' << v.z << '\n'; }
+        };
+
+        // Applies parsed "sparam" values (by name) back onto a behaviour's members.
+        using ParamMap = std::unordered_map<std::string, std::vector<float>>;
+        struct LoadParams : ScriptParams
+        {
+            const ParamMap& m;
+            explicit LoadParams(const ParamMap& src) : m(src) {}
+            const std::vector<float>* find(const char* n) const { auto it = m.find(n); return it == m.end() ? nullptr : &it->second; }
+            void Float(const char* n, float& v, float, float) override { if (auto* p = find(n)) if (!p->empty()) v = (*p)[0]; }
+            void Int(const char* n, int& v) override { if (auto* p = find(n)) if (!p->empty()) v = (int)(*p)[0]; }
+            void Bool(const char* n, bool& v) override { if (auto* p = find(n)) if (!p->empty()) v = (*p)[0] != 0.0f; }
+            void Vec3(const char* n, glm::vec3& v) override { if (auto* p = find(n)) if (p->size() >= 3) { v.x = (*p)[0]; v.y = (*p)[1]; v.z = (*p)[2]; } }
+        };
     }
 
     std::string SceneSerializer::SaveToString(ecs::Registry& reg, const SceneEnv& env)
@@ -81,7 +106,14 @@ namespace KDot
                 WriteVec3(o, c->localOffset); o << ' ' << (c->isTrigger ? 1 : 0) << '\n';
             }
             if (Script* s = reg.TryGet<Script>(e))
+            {
                 o << "script " << s->name << '\n';
+                if (s->instance)
+                {
+                    SaveParams sp(o);
+                    s->instance->OnInspect(sp);
+                }
+            }
             o << "end\n";
         }
         return o.str();
@@ -99,6 +131,7 @@ namespace KDot
         env = SceneEnv{};
 
         ecs::Entity cur = ecs::kNull;
+        ParamMap pendingParams; // script params collected within the current entity
 
         while (std::getline(in, line))
         {
@@ -107,13 +140,26 @@ namespace KDot
             if (!(ls >> key))
                 continue;
 
-            if (key == "env" || key == "end")
-            {
-                cur = ecs::kNull;
-            }
-            else if (key == "entity")
+            if (key == "entity")
             {
                 cur = reg.Create();
+                pendingParams.clear();
+            }
+            else if (key == "end")
+            {
+                if (cur != ecs::kNull)
+                    if (Script* s = reg.TryGet<Script>(cur))
+                        if (s->instance)
+                        {
+                            LoadParams lp(pendingParams);
+                            s->instance->OnInspect(lp);
+                        }
+                pendingParams.clear();
+                cur = ecs::kNull;
+            }
+            else if (key == "env")
+            {
+                cur = ecs::kNull;
             }
             // ---- environment ----
             else if (key == "sun_dir")            ls >> env.sunDir.x >> env.sunDir.y >> env.sunDir.z;
@@ -178,10 +224,42 @@ namespace KDot
             {
                 std::string rest;
                 std::getline(ls, rest);
-                reg.Emplace<Script>(cur).name = Trim(rest);
+                Script& s = reg.Emplace<Script>(cur);
+                s.name = Trim(rest);
+                s.instance = ScriptRegistry::Get().Create(s.name);
+                if (s.instance)
+                    s.instance->Attach(&reg, cur);
+            }
+            else if (cur != ecs::kNull && key == "sparam")
+            {
+                std::string pname;
+                ls >> pname;
+                std::vector<float> vals;
+                float f;
+                while (ls >> f)
+                    vals.push_back(f);
+                pendingParams[pname] = std::move(vals);
             }
         }
         return true;
+    }
+
+    void SceneSerializer::CopyScriptParams(ScriptBehavior& from, ScriptBehavior& to)
+    {
+        // Pull 'from' params into a map, then push them onto 'to'.
+        ParamMap tmp;
+        struct Pull : ScriptParams
+        {
+            ParamMap& m;
+            explicit Pull(ParamMap& mm) : m(mm) {}
+            void Float(const char* n, float& v, float, float) override { m[n] = {v}; }
+            void Int(const char* n, int& v) override { m[n] = {(float)v}; }
+            void Bool(const char* n, bool& v) override { m[n] = {v ? 1.0f : 0.0f}; }
+            void Vec3(const char* n, glm::vec3& v) override { m[n] = {v.x, v.y, v.z}; }
+        } pull(tmp);
+        from.OnInspect(pull);
+        LoadParams push(tmp);
+        to.OnInspect(push);
     }
 
     bool SceneSerializer::Save(const std::string& path, ecs::Registry& reg, const SceneEnv& env)

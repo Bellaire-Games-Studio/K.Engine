@@ -7,30 +7,45 @@
 // Built-in example behaviours.
 //
 //  These are ordinary game scripts: they derive from KDot::ScriptBehavior and
-//  manipulate components through the KDot namespace. They double as the "stdlib"
-//  of behaviours the editor offers in the Script component drop-down. Add your
-//  own the same way and register it with KE_REGISTER_SCRIPT.
+//  manipulate components through the KDot namespace. OnInspect() declares each
+//  behaviour's authored parameters, which the editor shows + edits and the
+//  serializer round-trips. They double as the "stdlib" of behaviours the editor
+//  offers in the Script component drop-down.
 // -----------------------------------------------------------------------------
 namespace KDot
 {
-    // Continuously yaw the entity about the Y axis.
+    // Continuously rotate the entity about a configurable axis.
     class SpinScript : public ScriptBehavior
     {
     public:
+        void OnInspect(ScriptParams& p) override
+        {
+            p.Float("speed", m_Speed, -720.0f, 720.0f); // degrees / second
+            p.Vec3("axis", m_Axis);
+        }
         void OnUpdate(float dt) override
         {
             if (Transform* t = GetTransform())
-                t->rotation = glm::angleAxis(glm::radians(m_Speed * dt), glm::vec3(0, 1, 0)) * t->rotation;
+            {
+                const glm::vec3 axis = glm::length(m_Axis) > 1e-4f ? glm::normalize(m_Axis) : glm::vec3(0, 1, 0);
+                t->rotation = glm::angleAxis(glm::radians(m_Speed * dt), axis) * t->rotation;
+            }
         }
 
     private:
-        float m_Speed = 90.0f; // degrees / second
+        float     m_Speed = 90.0f;
+        glm::vec3 m_Axis{0.0f, 1.0f, 0.0f};
     };
 
     // Bob up and down around the starting height.
     class HoverScript : public ScriptBehavior
     {
     public:
+        void OnInspect(ScriptParams& p) override
+        {
+            p.Float("amplitude", m_Amplitude, 0.0f, 100.0f);
+            p.Float("frequency", m_Frequency, 0.0f, 10.0f);
+        }
         void OnStart() override
         {
             if (Transform* t = GetTransform())
@@ -44,16 +59,21 @@ namespace KDot
         }
 
     private:
-        float m_BaseY = 0.0f;
-        float m_T = 0.0f;
-        float m_Amplitude = 10.0f;
-        float m_Frequency = 1.6f;
+        float m_Amplitude = 10.0f; // authored
+        float m_Frequency = 1.6f;  // authored
+        float m_BaseY = 0.0f;      // runtime
+        float m_T = 0.0f;          // runtime
     };
 
     // Orbit the starting position in the XZ plane.
     class PatrolScript : public ScriptBehavior
     {
     public:
+        void OnInspect(ScriptParams& p) override
+        {
+            p.Float("radius", m_Radius, 0.0f, 500.0f);
+            p.Float("speed", m_Speed, -10.0f, 10.0f); // radians / second
+        }
         void OnStart() override
         {
             if (Transform* t = GetTransform())
@@ -70,11 +90,12 @@ namespace KDot
         }
 
     private:
-        glm::vec3 m_Center{0.0f};
-        float     m_T = 0.0f;
-        float     m_Radius = 40.0f;
-        float     m_Speed = 0.8f; // radians / second
+        float     m_Radius = 40.0f; // authored
+        float     m_Speed = 0.8f;   // authored
+        glm::vec3 m_Center{0.0f};   // runtime
+        float     m_T = 0.0f;       // runtime
     };
+
     // Registered inside namespace KDot so the class names resolve.
     KE_REGISTER_SCRIPT(SpinScript, "Spin")
     KE_REGISTER_SCRIPT(HoverScript, "Hover")

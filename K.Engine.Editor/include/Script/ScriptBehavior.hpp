@@ -32,6 +32,20 @@
 
 namespace KDot
 {
+    // Visitor used to declare a behaviour's authored parameters. The same
+    // OnInspect() pass drives the inspector UI, save, load, and copy - each is a
+    // ScriptParams subclass that reads or writes the bound member. min<max gives
+    // the inspector a slider range (otherwise it uses a drag field).
+    class ScriptParams
+    {
+    public:
+        virtual ~ScriptParams() = default;
+        virtual void Float(const char* name, float& v, float min = 0.0f, float max = 0.0f) {}
+        virtual void Int(const char* name, int& v) {}
+        virtual void Bool(const char* name, bool& v) {}
+        virtual void Vec3(const char* name, glm::vec3& v) {}
+    };
+
     // Base class for all game behaviours.
     class ScriptBehavior
     {
@@ -40,6 +54,9 @@ namespace KDot
 
         virtual void OnStart() {}            // called once, when play begins
         virtual void OnUpdate(float dt) {}   // called every simulated frame
+
+        // Declare the behaviour's editable/serialized parameters (see ScriptParams).
+        virtual void OnInspect(ScriptParams&) {}
 
         // Bound by the runtime before OnStart; gives the behaviour its context.
         void Attach(ecs::Registry* reg, ecs::Entity self)
