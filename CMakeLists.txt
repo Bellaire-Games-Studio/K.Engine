@@ -112,10 +112,14 @@ set(SOURCE_CXX_SRC_DIR_Input       ${CMAKE_CURRENT_SOURCE_DIR}/${C_CXX_SOURCES_D
 set(SOURCE_CXX_SRC_DIR_imgui       ${CMAKE_CURRENT_SOURCE_DIR}/${C_CXX_SOURCES_DIR_imgui})
 
 
+# User C++ behaviours authored in the editor live here; they are globbed in and
+# compiled alongside the engine (re-run CMake after adding a new script file).
+set(SOURCE_CXX_SRC_DIR_Scripts ${CMAKE_CURRENT_SOURCE_DIR}/Scripts)
+
 # Source Files are Curated Here
 file(
     GLOB_RECURSE SOURCE_CXX_FILES
-    "${SOURCE_CXX_SRC_DIR_Physics}/*.cpp" "${SOURCE_CXX_SRC_DIR_Terrain}/*.cpp" "${SOURCE_CXX_SRC_DIR_Graphics}/*.cpp" "${SOURCE_CXX_SRC_DIR_imgui}/*.cpp" "${SOURCE_CXX_SRC_DIR_Audio}/*.cpp" "${SOURCE_CXX_SRC_DIR_Core}/*.cpp" "${SOURCE_CXX_SRC_DIR_Common}/*.cpp" "${SOURCE_CXX_SRC_DIR_Editor}/*.cpp" "${SOURCE_CXX_SRC_DIR_Input}/*.cpp"
+    "${SOURCE_CXX_SRC_DIR_Physics}/*.cpp" "${SOURCE_CXX_SRC_DIR_Terrain}/*.cpp" "${SOURCE_CXX_SRC_DIR_Graphics}/*.cpp" "${SOURCE_CXX_SRC_DIR_imgui}/*.cpp" "${SOURCE_CXX_SRC_DIR_Audio}/*.cpp" "${SOURCE_CXX_SRC_DIR_Core}/*.cpp" "${SOURCE_CXX_SRC_DIR_Common}/*.cpp" "${SOURCE_CXX_SRC_DIR_Editor}/*.cpp" "${SOURCE_CXX_SRC_DIR_Input}/*.cpp" "${SOURCE_CXX_SRC_DIR_Scripts}/*.cpp"
 )
 
 # Include Directories

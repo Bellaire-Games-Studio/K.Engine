@@ -37,5 +37,6 @@ namespace KDot
         std::unique_ptr<rhi::Buffer>   m_Ubo;
         std::unique_ptr<rhi::Pipeline> m_Pipeline;
         int m_Count = 0;
+        int m_BladeVerts = 6; // vertices per blade (set from the segment count in Init)
     };
 }

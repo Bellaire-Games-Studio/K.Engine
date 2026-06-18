@@ -19,11 +19,23 @@
 #include <Scene/SceneSerializer.hpp>
 #include <Script/ScriptBehavior.hpp>
 #include <gtc/quaternion.hpp>
+#include <gtc/matrix_inverse.hpp>
 #include <algorithm>
+#include <cctype>
+#include <cmath>
 #include <cstring>
+#include <fstream>
 #include <functional>
+#include <iterator>
 #include <string>
 #include <vector>
+
+#if defined(__has_include)
+#  if __has_include(<filesystem>)
+#    include <filesystem>
+#    define KE_HAS_FILESYSTEM 1
+#  endif
+#endif
 
 using namespace std;
 
@@ -38,8 +50,9 @@ namespace KDot
     //  item's components. Items can be spawned, duplicated, deleted, picked in
     //  the viewport, and moved with a transform gizmo.
     //
-    //  Controls: WASD fly · right-drag look · scroll zoom · left-click =
-    //            select (Select tool) or sculpt (Sculpt tool) · R re-drop ball
+    //  Controls: WASD fly · right-drag look · scroll zoom · left-click drives the
+    //            active toolbar tool (select / move-rotate-scale gizmo / sculpt
+    //            brush) · R re-drop ball
     // -------------------------------------------------------------------------
     namespace
     {
@@ -55,6 +68,74 @@ namespace KDot
             void Bool(const char* n, bool& v) override { ImGui::Checkbox(n, &v); }
             void Vec3(const char* n, glm::vec3& v) override { ImGui::DragFloat3(n, &v.x, 0.05f); }
         };
+
+        // World-space axes the transform gizmo manipulates along.
+        const glm::vec3 kGizmoAxis[3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+
+        // Closest parameter 'tAxis' along the infinite axis line (P0 + axis*t) to
+        // the cursor ray (O + dir*s), plus the distance between the two lines.
+        // Used both to grab a gizmo handle and to drag along it. Returns false if
+        // the ray is parallel to the axis.
+        bool ClosestAxisParam(const glm::vec3& O, const glm::vec3& dir,
+                              const glm::vec3& P0, const glm::vec3& axis,
+                              float& tAxis, float& lineDist)
+        {
+            const glm::vec3 w0 = O - P0;
+            const float a = glm::dot(dir, dir);
+            const float b = glm::dot(dir, axis);
+            const float c = glm::dot(axis, axis);
+            const float d = glm::dot(dir, w0);
+            const float e = glm::dot(axis, w0);
+            const float denom = a * c - b * b;
+            if (std::abs(denom) < 1e-6f)
+                return false;
+            const float s = (b * e - c * d) / denom; // param along the ray
+            const float t = (a * e - b * d) / denom; // param along the axis
+            const glm::vec3 pRay = O + dir * s;
+            const glm::vec3 pAxis = P0 + axis * t;
+            tAxis = t;
+            lineDist = glm::length(pRay - pAxis);
+            return true;
+        }
+
+        // A templated C++ behaviour the in-editor Script editor writes to disk.
+        std::string ScriptTemplate(const std::string& cls)
+        {
+            return
+"#include <Script/ScriptBehavior.hpp>\n"
+"#include <gtc/quaternion.hpp>\n"
+"#include <cmath>\n"
+"\n"
+"// A custom C++ behaviour. OnUpdate runs every simulated frame while playing;\n"
+"// declare tweakable fields in OnInspect so they appear in the inspector and\n"
+"// save with the scene. Drop this file in Scripts/ and rebuild to compile it in\n"
+"// (the same code then runs on native and web).\n"
+"namespace KDot\n"
+"{\n"
+"    class " + cls + " : public ScriptBehavior\n"
+"    {\n"
+"    public:\n"
+"        void OnInspect(ScriptParams& p) override\n"
+"        {\n"
+"            p.Float(\"speed\", m_Speed, 0.0f, 360.0f);\n"
+"        }\n"
+"\n"
+"        void OnStart() override {}\n"
+"\n"
+"        void OnUpdate(float dt) override\n"
+"        {\n"
+"            if (Transform* t = GetTransform())\n"
+"                t->rotation = glm::angleAxis(glm::radians(m_Speed * dt),\n"
+"                                             glm::vec3(0, 1, 0)) * t->rotation;\n"
+"        }\n"
+"\n"
+"    private:\n"
+"        float m_Speed = 45.0f;\n"
+"    };\n"
+"\n"
+"    KE_REGISTER_SCRIPT(" + cls + ", \"" + cls + "\")\n"
+"}\n";
+        }
     }
 
     class WorldLayer : public Layer
@@ -75,9 +156,27 @@ namespace KDot
         float m_Time = 0.0f;
 
         // Editor / interaction state
-        enum class Tool { Select, Sculpt };
+        //  The toolbar exposes the transform gizmo tools (Select/Move/Rotate/
+        //  Scale) and the terrain sculpt brushes (Raise/Lower/Flatten/Smooth)
+        //  side by side, so "sculpting with different tools" lives next to object
+        //  manipulation again.
+        enum class Tool { Select, Move, Rotate, Scale,
+                          SculptRaise, SculptLower, SculptFlatten, SculptSmooth };
         enum class Sel  { None, Entity, Sun, Fog, Terrain, Grass };
         enum class PlayState { Editing, Playing, Paused };
+
+        static bool IsTransformTool(Tool t) { return t == Tool::Move || t == Tool::Rotate || t == Tool::Scale; }
+        static bool IsSculptTool(Tool t)    { return t >= Tool::SculptRaise; }
+        static SculptMode SculptModeOf(Tool t)
+        {
+            switch (t)
+            {
+                case Tool::SculptLower:   return SculptMode::Lower;
+                case Tool::SculptFlatten: return SculptMode::Flatten;
+                case Tool::SculptSmooth:  return SculptMode::Smooth;
+                default:                  return SculptMode::Raise;
+            }
+        }
 
         Tool        m_Tool = Tool::Select;
         Sel         m_Sel = Sel::None;
@@ -86,6 +185,29 @@ namespace KDot
         bool        m_LeftPrev = false;
         int         m_NextCube = 1;
         int         m_NextLight = 1;
+
+        // Transform-gizmo drag state.
+        int       m_HoverAxis = -1;   // axis under the cursor (highlight)
+        int       m_GrabAxis  = -1;   // axis currently being dragged (-1 = none)
+        bool      m_Dragging  = false;
+        float     m_GizmoScale = 16.0f;
+        glm::vec3 m_DragOrigin{0.0f};      // fixed gizmo origin captured at grab
+        float     m_DragStartParam = 0.0f; // axis parameter where the grab happened
+        glm::vec3 m_DragStartPos{0.0f};    // entity local position at grab
+        glm::quat m_DragStartRot{1, 0, 0, 0};
+        glm::vec3 m_DragStartScale{1.0f};
+        glm::vec2 m_DragStartMouse{0.0f};
+
+        // Grass view-distance culling (only blades near the camera are uploaded).
+        std::vector<GrassInstance> m_GrassVisible;
+        glm::vec3                  m_GrassCullPos{1e9f};
+
+        // In-editor C++ script authoring.
+        bool                     m_ShowScriptEditor = false;
+        std::vector<char>        m_ScriptBuf;
+        char                     m_ScriptName[64] = "MyBehaviour";
+        std::string              m_ScriptStatus;
+        std::vector<std::string> m_ScriptSaved; // files written this session
 
         PlayState   m_Play = PlayState::Editing;
         std::string m_Snapshot;                 // serialized scene captured on Play
@@ -209,8 +331,120 @@ namespace KDot
             gp.seed = static_cast<std::uint32_t>(m_Seed);
 
             m_GrassField.Generate(m_Terrain.Field(), gp);
-            m_Grass.SetInstances(m_GrassField.Instances());
             m_Grass.maxDistance = 120.0f + fid * 380.0f; // grass view distance scales with fidelity
+            CullGrass(true);
+        }
+
+        // Upload only the blades within the grass view distance of the camera, so
+        // the GPU never processes the whole field every frame. Recomputed only
+        // when the camera has moved enough (it's stable while standing still),
+        // which keeps the per-frame cost near zero.
+        void CullGrass(bool force)
+        {
+            const glm::vec3 cam = m_Camera.m_Position;
+            if (!force && glm::length(cam - m_GrassCullPos) < 10.0f)
+                return;
+            m_GrassCullPos = cam;
+
+            const float maxD = m_Grass.maxDistance + 16.0f;
+            const float maxD2 = maxD * maxD;
+            const std::vector<GrassInstance>& all = m_GrassField.Instances();
+            m_GrassVisible.clear();
+            m_GrassVisible.reserve(all.size());
+            for (const GrassInstance& g : all)
+            {
+                const float dx = g.position.x - cam.x;
+                const float dz = g.position.z - cam.z;
+                if (dx * dx + dz * dz <= maxD2)
+                    m_GrassVisible.push_back(g);
+            }
+            m_Grass.SetInstances(m_GrassVisible);
+        }
+
+        // Gizmo size: scales with the selected object (per the request) but with a
+        // distance-based floor so a tiny or far object's handles stay grabbable.
+        float GizmoScaleFor(ecs::Entity e)
+        {
+            const glm::vec3 o = WorldPosition(m_Registry, e);
+            glm::vec3 ext(1.0f);
+            if (Transform* t = m_Registry.TryGet<Transform>(e))
+                ext = glm::abs(t->scale);
+            if (Prop* p = m_Registry.TryGet<Prop>(e))
+                ext *= glm::abs(p->size);
+            const float objSize = glm::max(glm::max(ext.x, ext.y), ext.z);
+            const float distFloor = glm::length(m_Camera.m_Position - o) * 0.05f;
+            return glm::clamp(objSize * 1.2f + distFloor * 0.5f, distFloor, 4000.0f);
+        }
+
+        // Parent's world matrix (identity if unparented) - used to convert gizmo
+        // edits in world space back into the entity's local Transform.
+        glm::mat4 ParentWorld(ecs::Entity e)
+        {
+            if (Parent* p = m_Registry.TryGet<Parent>(e))
+                if (p->value != ecs::kNull && m_Registry.Valid(p->value))
+                    return WorldMatrix(m_Registry, p->value);
+            return glm::mat4(1.0f);
+        }
+
+        // Pick the gizmo axis (0/1/2) closest to the cursor ray, or -1 if none is
+        // within grabbing distance. Outputs the axis parameter at the grab point.
+        int PickGizmoAxis(const glm::vec3& o, float g, const Picking::PickRay& ray, float& outParam)
+        {
+            int best = -1;
+            float bestDist = 1e9f;
+            outParam = 0.0f;
+            const float grabR = g * 0.18f;
+            for (int i = 0; i < 3; ++i)
+            {
+                float t = 0.0f, dist = 0.0f;
+                if (!ClosestAxisParam(ray.origin, ray.direction, o, kGizmoAxis[i], t, dist))
+                    continue;
+                if (t < 0.0f || t > g)
+                    continue; // only along the drawn handle
+                if (dist < grabR && dist < bestDist)
+                {
+                    bestDist = dist;
+                    best = i;
+                    outParam = t;
+                }
+            }
+            return best;
+        }
+
+        // Apply the active transform tool while a gizmo handle is held.
+        void ApplyGizmoDrag(Transform* t, const Picking::PickRay& ray, const glm::vec2& mouse)
+        {
+            const int axis = m_GrabAxis;
+            if (axis < 0 || !t)
+                return;
+            const glm::vec3 A = kGizmoAxis[axis];
+
+            if (m_Tool == Tool::Move)
+            {
+                float tNow = 0.0f, dd = 0.0f;
+                if (ClosestAxisParam(ray.origin, ray.direction, m_DragOrigin, A, tNow, dd))
+                {
+                    const glm::vec3 newWorld = m_DragOrigin + A * (tNow - m_DragStartParam);
+                    t->position = glm::vec3(glm::affineInverse(ParentWorld(m_SelEntity)) * glm::vec4(newWorld, 1.0f));
+                }
+            }
+            else if (m_Tool == Tool::Scale)
+            {
+                float tNow = 0.0f, dd = 0.0f;
+                if (ClosestAxisParam(ray.origin, ray.direction, m_DragOrigin, A, tNow, dd))
+                {
+                    const float ref = (std::abs(m_DragStartParam) > 1e-2f) ? m_DragStartParam : (m_GizmoScale * 0.5f);
+                    const float ratio = glm::clamp(tNow / ref, 0.05f, 50.0f);
+                    glm::vec3 s = m_DragStartScale;
+                    s[axis] = glm::max(m_DragStartScale[axis] * ratio, 0.001f);
+                    t->scale = s;
+                }
+            }
+            else if (m_Tool == Tool::Rotate)
+            {
+                const float dxPix = mouse.x - m_DragStartMouse.x;
+                t->rotation = glm::angleAxis(glm::radians(dxPix * 0.4f), A) * m_DragStartRot;
+            }
         }
 
         // ---- World items ----------------------------------------------------
@@ -498,31 +732,74 @@ namespace KDot
 
             m_Camera.Update(deltaTime);
 
-            // --- Left mouse: select (Select tool) or sculpt (Sculpt tool) ---
+            // --- Left mouse: transform gizmo / select / sculpt (per active tool) ---
             const bool leftDown = Input::IsMouseButtonPressed(KDot::Mouse::LeftClick);
             const bool leftClick = leftDown && !m_LeftPrev; // rising edge
-            if (m_ViewportHovered)
+            m_HoverAxis = -1;
+
+            if (m_ViewportHovered || m_Dragging)
             {
-                if (m_Tool == Tool::Select && leftClick)
+                const Picking::PickRay ray = Picking::ScreenToRay(m_ViewportNDC, m_Camera.GetViewMatrix(), Projection());
+                const bool haveXform = (m_Sel == Sel::Entity && m_Registry.Valid(m_SelEntity)
+                                        && m_Registry.TryGet<Transform>(m_SelEntity));
+
+                if (IsTransformTool(m_Tool) && haveXform)
                 {
-                    ecs::Entity picked;
-                    if (PickEntity(picked))
-                        Select(picked);
+                    Transform* t = m_Registry.TryGet<Transform>(m_SelEntity);
+                    const glm::vec3 o = WorldPosition(m_Registry, m_SelEntity);
+                    m_GizmoScale = GizmoScaleFor(m_SelEntity);
+
+                    if (m_Dragging && leftDown)
+                    {
+                        ApplyGizmoDrag(t, ray, mouse);
+                    }
+                    else if (leftClick)
+                    {
+                        float grabParam = 0.0f;
+                        const int axis = PickGizmoAxis(o, m_GizmoScale, ray, grabParam);
+                        if (axis >= 0)
+                        {
+                            m_Dragging = true;
+                            m_GrabAxis = axis;
+                            m_DragOrigin = o;
+                            m_DragStartParam = grabParam;
+                            m_DragStartPos = t->position;
+                            m_DragStartRot = t->rotation;
+                            m_DragStartScale = t->scale;
+                            m_DragStartMouse = mouse;
+                        }
+                        else // missed the handles: re-pick (or clear) like Select
+                        {
+                            ecs::Entity picked;
+                            if (PickEntity(picked)) Select(picked);
+                            else { m_Sel = Sel::None; m_SelEntity = ecs::kNull; }
+                        }
+                    }
                     else
                     {
-                        m_Sel = Sel::None;
-                        m_SelEntity = ecs::kNull;
+                        float dummy = 0.0f;
+                        m_HoverAxis = PickGizmoAxis(o, m_GizmoScale, ray, dummy);
                     }
                 }
-                else if (m_Tool == Tool::Sculpt && leftDown)
+                else if (m_Tool == Tool::Select && leftClick)
+                {
+                    ecs::Entity picked;
+                    if (PickEntity(picked)) Select(picked);
+                    else { m_Sel = Sel::None; m_SelEntity = ecs::kNull; }
+                }
+                else if (IsSculptTool(m_Tool) && leftDown)
                 {
                     RaycastHit hit;
                     if (PickTerrain(hit))
-                    {
-                        const SculptMode mode = Input::IsKeyPressed(KDot::Key::LeftShift) ? SculptMode::Lower : SculptMode::Raise;
-                        m_Terrain.Sculpt(glm::vec2(hit.point.x, hit.point.z), m_BrushRadius, m_BrushStrength, mode, dt);
-                    }
+                        m_Terrain.Sculpt(glm::vec2(hit.point.x, hit.point.z),
+                                         m_BrushRadius, m_BrushStrength, SculptModeOf(m_Tool), dt);
                 }
+            }
+
+            if (!leftDown)
+            {
+                m_Dragging = false;
+                m_GrabAxis = -1;
             }
             m_LeftPrev = leftDown;
 
@@ -530,6 +807,7 @@ namespace KDot
             const bool simulate = (m_Play == PlayState::Playing);
             EnsureScriptInstances(); // so params are live for the inspector/save
             m_Terrain.Update(m_Camera.m_Position);
+            CullGrass(false);        // refresh the near-camera grass set if we moved
             if (simulate)
             {
                 UpdateScripts(dt);
@@ -578,17 +856,40 @@ namespace KDot
                 m_Renderer.DrawCube(WorldPosition(m_Registry, e), glm::vec3(3.0f), glm::vec4(ls.color, 1.0f), 0.0f);
             });
 
-            if (m_Sel == Sel::Entity && m_Registry.Valid(m_SelEntity))
+            if (m_Sel == Sel::Entity && m_Registry.Valid(m_SelEntity) && m_Registry.TryGet<Transform>(m_SelEntity))
+                DrawGizmo(m_SelEntity);
+        }
+
+        // Transform gizmo: three axis handles scaled to the selected object, the
+        // active/hovered axis highlighted. Move/Scale tools drag along a handle;
+        // Rotate spins about it. A passive locator is drawn for non-transform
+        // tools so the selection is always findable.
+        void DrawGizmo(ecs::Entity e)
+        {
+            const glm::vec3 o = WorldPosition(m_Registry, e);
+            const float g = GizmoScaleFor(e);
+            m_GizmoScale = g;
+            const float bar = g * 0.045f; // handle thickness
+            const float tip = g * 0.13f;  // end-cap size
+            const bool  tf  = IsTransformTool(m_Tool);
+
+            const glm::vec4 axisCol[3] = {
+                {0.95f, 0.26f, 0.26f, 1.0f}, {0.30f, 0.95f, 0.32f, 1.0f}, {0.34f, 0.48f, 1.0f, 1.0f}};
+            const glm::vec4 hot(1.0f, 0.85f, 0.15f, 1.0f);
+
+            for (int i = 0; i < 3; ++i)
             {
-                if (m_Registry.TryGet<Transform>(m_SelEntity))
-                {
-                    const glm::vec3 o = WorldPosition(m_Registry, m_SelEntity);
-                    const float L = 16.0f, w = 0.8f;
-                    m_Renderer.DrawCube(o + glm::vec3(L * 0.5f, 0, 0), glm::vec3(L, w, w), glm::vec4(1.0f, 0.25f, 0.25f, 1.0f), 0.0f);
-                    m_Renderer.DrawCube(o + glm::vec3(0, L * 0.5f, 0), glm::vec3(w, L, w), glm::vec4(0.25f, 1.0f, 0.25f, 1.0f), 0.0f);
-                    m_Renderer.DrawCube(o + glm::vec3(0, 0, L * 0.5f), glm::vec3(w, w, L), glm::vec4(0.35f, 0.45f, 1.0f, 1.0f), 0.0f);
-                }
+                glm::vec4 col = axisCol[i];
+                if (tf && (m_GrabAxis == i || (m_GrabAxis < 0 && m_HoverAxis == i)))
+                    col = hot;
+
+                const glm::vec3 a = kGizmoAxis[i];
+                glm::vec3 size(bar);
+                size[i] = g;                          // long along its axis
+                m_Renderer.DrawCube(o + a * (g * 0.5f), size, col, 0.0f); // shaft
+                m_Renderer.DrawCube(o + a * g, glm::vec3(tip), col, 0.0f); // cap
             }
+            m_Renderer.DrawCube(o, glm::vec3(g * 0.08f), glm::vec4(0.95f, 0.95f, 0.95f, 1.0f), 0.0f);
         }
 
         void DrawHUD()
@@ -671,6 +972,7 @@ namespace KDot
                     ImGui::DockBuilderDockWindow("Explorer", left);
                     ImGui::DockBuilderDockWindow("Properties", right);
                     ImGui::DockBuilderDockWindow("Viewport", center);
+                    ImGui::DockBuilderDockWindow("Script Editor", center); // tab over the viewport
                     ImGui::DockBuilderFinish(dockspace_id);
                 }
             }
@@ -687,6 +989,11 @@ namespace KDot
                 {
                     if (ImGui::MenuItem("Cube"))  SpawnCube();
                     if (ImGui::MenuItem("Light")) SpawnLight();
+                    ImGui::EndMenu();
+                }
+                if (ImGui::BeginMenu("Scripts"))
+                {
+                    ImGui::MenuItem("C++ Script Editor", nullptr, &m_ShowScriptEditor);
                     ImGui::EndMenu();
                 }
 
@@ -714,6 +1021,8 @@ namespace KDot
 
             DrawExplorer(io);
             DrawProperties();
+            if (m_ShowScriptEditor)
+                DrawScriptEditor();
 
             // Deferred destroy (so we never free an entity mid-UI).
             if (m_PendingDelete != ecs::kNull)
@@ -730,6 +1039,7 @@ namespace KDot
 
             // ---- Viewport (also captures cursor state for picking) ------------
             ImGui::Begin("Viewport");
+            DrawToolbar(); // scene-interaction tools across the top of the view
             ImVec2 panelSize = ImGui::GetContentRegionAvail();
             ImGui::Image((void *)m_Renderer.GetFrameBufferTexture(), panelSize, ImVec2(0, 1), ImVec2(1, 0));
 
@@ -754,12 +1064,8 @@ namespace KDot
             {
                 ImGui::Text("FPS: %.1f  (%.2f ms)", io.Framerate, io.DeltaTime * 1000.0f);
                 ImGui::Text("Draw calls: %d   Tris: %d", m_Renderer.DrawCallCount, m_Renderer.Triangles);
-
-                ImGui::TextUnformatted("Tool:");
-                ImGui::SameLine();
-                if (ImGui::RadioButton("Select", m_Tool == Tool::Select)) m_Tool = Tool::Select;
-                ImGui::SameLine();
-                if (ImGui::RadioButton("Sculpt", m_Tool == Tool::Sculpt)) m_Tool = Tool::Sculpt;
+                ImGui::Text("Grass: %d blades drawn", m_Grass.InstanceCount());
+                ImGui::TextDisabled("Scene tools are on the viewport toolbar.");
 
                 QualitySettings& q = QualitySettings::Get();
                 if (ImGui::SliderFloat("Fidelity", &m_Fidelity, 0.0f, 1.0f, "%.2f"))
@@ -883,10 +1189,10 @@ namespace KDot
             if (ImGui::Button("Regenerate"))
                 RegenerateTerrain();
             ImGui::Separator();
-            ImGui::TextUnformatted("Sculpt brush (use the Sculpt tool)");
+            ImGui::TextUnformatted("Sculpt brush");
             ImGui::SliderFloat("Radius", &m_BrushRadius, 4.0f, 100.0f, "%.0f");
             ImGui::SliderFloat("Strength", &m_BrushStrength, 1.0f, 60.0f, "%.0f");
-            ImGui::TextDisabled("left-click sculpt (hold Shift = lower)");
+            ImGui::TextDisabled("Pick Raise / Lower / Flatten / Smooth on the toolbar, then left-click-drag.");
         }
 
         void DrawGrassProps()
@@ -1067,6 +1373,159 @@ namespace KDot
                 m_PendingDelete = e;
 
             ImGui::PopID();
+        }
+
+        // ---- Viewport toolbar ----------------------------------------------
+        void DrawToolbar()
+        {
+            auto btn = [&](const char* label, Tool t, const char* tip) {
+                const bool active = (m_Tool == t);
+                if (active)
+                {
+                    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.45f, 0.85f, 1.0f));
+                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.26f, 0.52f, 0.92f, 1.0f));
+                }
+                if (ImGui::Button(label))
+                    m_Tool = t;
+                if (active)
+                    ImGui::PopStyleColor(2);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("%s", tip);
+                ImGui::SameLine();
+            };
+
+            ImGui::TextUnformatted("Tools:");
+            ImGui::SameLine();
+            btn("Select", Tool::Select, "Click to pick objects in the viewport");
+            btn("Move",   Tool::Move,   "Drag an axis handle to move the selection");
+            btn("Rotate", Tool::Rotate, "Drag left/right to rotate about the picked axis");
+            btn("Scale",  Tool::Scale,  "Drag an axis handle to scale the selection");
+
+            ImGui::TextUnformatted("| Sculpt:");
+            ImGui::SameLine();
+            btn("Raise",   Tool::SculptRaise,   "Raise terrain under the brush");
+            btn("Lower",   Tool::SculptLower,   "Lower terrain under the brush");
+            btn("Flatten", Tool::SculptFlatten, "Pull terrain toward the brush's average height");
+            btn("Smooth",  Tool::SculptSmooth,  "Smooth / blur terrain under the brush");
+
+            if (IsSculptTool(m_Tool))
+            {
+                ImGui::SetNextItemWidth(120.0f);
+                ImGui::SliderFloat("##brushR", &m_BrushRadius, 4.0f, 100.0f, "radius %.0f");
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(120.0f);
+                ImGui::SliderFloat("##brushS", &m_BrushStrength, 1.0f, 60.0f, "strength %.0f");
+            }
+            else
+            {
+                ImGui::NewLine();
+            }
+            ImGui::Separator();
+        }
+
+        // ---- In-editor C++ script authoring --------------------------------
+        static std::string SanitizeIdent(const std::string& in)
+        {
+            std::string out;
+            for (char c : in)
+                if (std::isalnum((unsigned char)c) || c == '_')
+                    out += c;
+            if (!out.empty() && std::isdigit((unsigned char)out[0]))
+                out = "_" + out;
+            return out;
+        }
+
+        static std::string ScriptPath(const std::string& name) { return "Scripts/" + name + ".cpp"; }
+
+        void SaveScript()
+        {
+            const std::string cls = SanitizeIdent(m_ScriptName);
+            if (cls.empty())
+            {
+                m_ScriptStatus = "Name must be a valid C++ identifier.";
+                return;
+            }
+#ifdef KE_HAS_FILESYSTEM
+            std::error_code ec;
+            std::filesystem::create_directories("Scripts", ec);
+#endif
+            const std::string path = ScriptPath(cls);
+            std::ofstream out(path, std::ios::out | std::ios::trunc);
+            if (!out.is_open())
+            {
+                m_ScriptStatus = "Could not write " + path + " (read-only filesystem?).";
+                return;
+            }
+            out << m_ScriptBuf.data(); // editor buffer is NUL-terminated
+            out.close();
+            if (std::find(m_ScriptSaved.begin(), m_ScriptSaved.end(), cls) == m_ScriptSaved.end())
+                m_ScriptSaved.push_back(cls);
+            m_ScriptStatus = "Saved " + path + " - rebuild (CMake) to compile it in.";
+        }
+
+        void LoadScript()
+        {
+            const std::string cls = SanitizeIdent(m_ScriptName);
+            const std::string path = ScriptPath(cls);
+            std::ifstream in(path, std::ios::in);
+            if (!in.is_open())
+            {
+                m_ScriptStatus = "No file at " + path;
+                return;
+            }
+            std::string s((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+            m_ScriptBuf.assign(s.begin(), s.end());
+            m_ScriptBuf.resize(std::max<std::size_t>(1u << 15, m_ScriptBuf.size() + 1), '\0');
+            m_ScriptStatus = "Loaded " + path;
+        }
+
+        void DrawScriptEditor()
+        {
+            if (m_ScriptBuf.empty())
+            {
+                const std::string tpl = ScriptTemplate("MyBehaviour");
+                m_ScriptBuf.assign(tpl.begin(), tpl.end());
+                m_ScriptBuf.resize(1u << 15, '\0');
+            }
+
+            ImGui::Begin("Script Editor", &m_ShowScriptEditor);
+
+            ImGui::TextWrapped(
+                "Author a C++ behaviour, Save it into Scripts/, then rebuild to compile it in. "
+                "It registers by class name (KE_REGISTER_SCRIPT) and becomes selectable in any "
+                "entity's Script component - the same code runs on native and web. The browser "
+                "build cannot compile at runtime, so saved scripts are picked up on the next "
+                "CMake build; native desktop is the live author-and-rebuild loop.");
+            ImGui::Separator();
+
+            ImGui::SetNextItemWidth(220.0f);
+            ImGui::InputText("Class / file", m_ScriptName, sizeof(m_ScriptName));
+            ImGui::SameLine();
+            if (ImGui::Button("New from template"))
+            {
+                const std::string tpl = ScriptTemplate(SanitizeIdent(m_ScriptName).empty() ? "MyBehaviour"
+                                                                                           : SanitizeIdent(m_ScriptName));
+                m_ScriptBuf.assign(tpl.begin(), tpl.end());
+                m_ScriptBuf.resize(1u << 15, '\0');
+                m_ScriptStatus.clear();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Save to Scripts/")) SaveScript();
+            ImGui::SameLine();
+            if (ImGui::Button("Load")) LoadScript();
+
+            if (!m_ScriptStatus.empty())
+                ImGui::TextDisabled("%s", m_ScriptStatus.c_str());
+            if (!m_ScriptSaved.empty())
+            {
+                std::string list = "Saved this session:";
+                for (const std::string& s : m_ScriptSaved) list += " " + s;
+                ImGui::TextDisabled("%s", list.c_str());
+            }
+
+            ImGui::InputTextMultiline("##code", m_ScriptBuf.data(), m_ScriptBuf.size(),
+                                      ImVec2(-1.0f, -1.0f), ImGuiInputTextFlags_AllowTabInput);
+            ImGui::End();
         }
 
         virtual void PostRender() override {}

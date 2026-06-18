@@ -5,6 +5,8 @@ precision highp float;
 in float vH;
 in vec3  vWorld;
 in float vFade;
+in vec3  vNormal;
+in float vSeed;
 
 out vec4 fragColor;
 
@@ -24,26 +26,51 @@ layout(std140) uniform Constants
 
 void main()
 {
-    if (vFade <= 0.01)
-        discard; // fully faded-out blade
+    if (vFade <= 0.002)
+        discard; // fully faded-out blade (rare: only the outermost ring)
 
     float ambientIntensity = params1.x;
     float sunIntensity     = params1.y;
     float fogDensity       = params1.z;
 
-    vec3 rootCol = vec3(0.12, 0.22, 0.07);
-    vec3 tipCol  = vec3(0.42, 0.55, 0.18);
-    vec3 base = mix(rootCol, tipCol, vH);
+    // Per-blade colour variation: drift between a lush green and a drier, more
+    // yellow blade so the field isn't a single flat hue.
+    vec3 rootCol = vec3(0.05, 0.14, 0.04);
+    vec3 lush    = vec3(0.33, 0.52, 0.15);
+    vec3 dry     = vec3(0.55, 0.52, 0.22);
+    vec3 tipCol  = mix(lush, dry, vSeed * 0.6);
+    vec3 base    = mix(rootCol, tipCol, vH * vH); // darker, AO-like toward the root
 
-    // Grass is lit mainly from the sky/sun; treat the normal as up.
-    vec3 N = vec3(0.0, 1.0, 0.0);
-    float sunDiff = max(dot(N, normalize(-sunDir.xyz)), 0.0);
-    vec3 lighting = ambientColor.xyz * ambientIntensity + sunColor.xyz * sunIntensity * sunDiff;
+    // Two-sided lighting: flip the normal for back faces (cull is off).
+    vec3 N = normalize(vNormal);
+    if (!gl_FrontFacing)
+        N = -N;
 
-    // Fake ambient occlusion: darker toward the root.
-    lighting *= mix(0.55, 1.0, vH);
+    vec3 L = normalize(-sunDir.xyz);
+    vec3 V = normalize(cameraPos.xyz - vWorld);
+    vec3 H = normalize(L + V);
 
-    vec3 col = base * lighting;
+    // Half-Lambert keeps the shaded side soft instead of black.
+    float nl   = max(dot(N, L), 0.0);
+    float wrap = nl * 0.5 + 0.5;
+
+    // Hemisphere ambient: sky tint from above, a darker ground bounce from below.
+    vec3 skyAmb    = ambientColor.xyz;
+    vec3 groundAmb = ambientColor.xyz * 0.35 + vec3(0.04, 0.05, 0.02);
+    vec3 ambient   = mix(groundAmb, skyAmb, N.y * 0.5 + 0.5) * ambientIntensity;
+
+    // Fake subsurface scattering: thin blades glow where the sun is behind them,
+    // strongest toward the translucent tip.
+    float backlit = pow(max(dot(-N, L), 0.0), 2.0);
+    vec3  trans   = sunColor.xyz * sunIntensity * backlit * vH * 0.6;
+
+    // Soft sheen so tips catch the sun.
+    float spec = pow(max(dot(N, H), 0.0), 24.0) * 0.15 * vH;
+
+    float ao = mix(0.45, 1.0, vH); // contact darkening near the ground
+    vec3 lighting = ambient * ao + sunColor.xyz * sunIntensity * wrap * ao;
+
+    vec3 col = base * lighting + trans + sunColor.xyz * spec;
 
     if (fogDensity > 0.0)
     {

@@ -14,14 +14,15 @@ The build folder holds a current build of the repository.
 - [X] Mouse input + screen-ray picking (click-to-sculpt, look/zoom)
 - [X] Procedural Terrain (chunked, LOD, runtime sculpting)
 - [X] GPU procedural terrain texturing (height/slope material splatting)
-- [X] GPU-instanced grass (wind-animated, density from the fidelity dial)
+- [X] GPU-instanced grass (curved multi-segment blades, hemisphere + translucency lighting, two-frequency wind, distance-culled)
 - [X] Physics (rigidbody, AABB/sphere, raycasts, terrain collision)
 - [X] Entity Component System
-- [X] Scene editor: World Explorer (parent/child tree) + Properties (per-component) inspector
+- [X] Scene editor: viewport **toolbar** (Select / Move / Rotate / Scale + Raise / Lower / Flatten / Smooth), World Explorer (parent/child tree) + Properties (per-component) inspector
+- [X] Interactive transform gizmo (drag the axis handles; scaled to the object)
 - [X] Parent/child hierarchy (relative transforms; re-parent keeps world position)
 - [X] Play / Pause / Stop (physics + scripts frozen while editing; non-destructive)
 - [X] Scene save / load (`.kscene` text format)
-- [X] C++ scripting (`ScriptBehavior` behaviours with authored parameters, native + web)
+- [X] C++ scripting (`ScriptBehavior` behaviours + in-editor **C++ Script Editor**; author your own, rebuild to run — native + web)
 - [X] Adjustable fidelity / LOD ("0.65" dial)
 - [ ] Audio
 - [ ] Animation
@@ -52,11 +53,21 @@ them. **Play** snapshots the world and runs physics + scripts; **Stop** restores
 the snapshot, so editing is always non-destructive. **File → Save/Open Scene**
 serializes the world (and environment) to a `.kscene` text file.
 
+The viewport has a **toolbar** across the top: the transform tools (Select / Move
+/ Rotate / Scale) drive an interactive gizmo on the selected entity — drag an axis
+handle to move or scale, drag left/right to rotate, and the gizmo **scales with
+the object** so its handles match what you're editing. The sculpt tools (Raise /
+Lower / Flatten / Smooth) are right beside them with their brush radius/strength,
+so terrain editing and object editing share one tool palette.
+
 Game logic lives in C++ behaviours — *engine for the game, not games for the
 engine*. A behaviour derives from `KDot::ScriptBehavior`, uses the `KDot`
 namespace, and is registered by name; attach it via a `Script` component. Because
 behaviours compile into the binary, the same code runs on native **and** web
-(no separate scripting VM):
+(no separate scripting VM). You author them right in the editor — **Scripts →
+C++ Script Editor** writes a real `.cpp` into [`Scripts/`](Scripts/README.md);
+re-run CMake to compile it in (native is the live author-and-rebuild loop; the
+browser build picks new scripts up on its next build):
 
 ```cpp
 class Spin : public KDot::ScriptBehavior {
@@ -70,7 +81,12 @@ KE_REGISTER_SCRIPT(Spin, "Spin"); // now selectable in the Script component
 
 ```
 
-Built-ins: `Spin`, `Hover`, `Patrol` (see `K.Engine.Editor/src/Script/BuiltinScripts.cpp`).
+Built-ins: `Spin`, `Hover`, `Patrol` (see `K.Engine.Editor/src/Script/BuiltinScripts.cpp`);
+user scripts live in [`Scripts/`](Scripts/README.md) (`Pulse` is a worked example).
+
+> Raising the visual ceiling further (grass clumping, HDR/tonemapping, cascaded
+> shadows, SSAO, PBR, atmosphere) is laid out in
+> [`docs/RENDERING_ROADMAP.md`](docs/RENDERING_ROADMAP.md).
 
 ## The fidelity dial
 

@@ -3,6 +3,8 @@
 precision highp float;
 
 // Per-vertex blade geometry: x in [-1,1] across the blade, y in [0,1] up it.
+// The blade is now a multi-segment strip (several rows of y) so it can curve
+// along its length instead of being a single flat billboard quad.
 layout(location=0) in vec2 vBlade;
 // Per-instance (divisor 1): base world position, then (windPhase, heightScale, yaw).
 layout(location=1) in vec3 iPos;
@@ -22,9 +24,20 @@ layout(std140) uniform Constants
     vec4 params1;      // ambientIntensity, sunIntensity, fogDensity, _
 };
 
-out float vH;     // height along the blade [0,1]
-out vec3  vWorld; // world position (for fog)
-out float vFade;  // distance fade [0,1]
+out float vH;      // height along the blade [0,1]
+out vec3  vWorld;  // world position (for fog + specular)
+out float vFade;   // distance fade [0,1]
+out vec3  vNormal; // per-vertex blade normal (curvature + rounding)
+out float vSeed;   // per-blade random [0,1] for hue variation
+
+// Cheap hash -> [0,1) so each blade gets stable per-blade variation.
+float hash11(float p)
+{
+    p = fract(p * 0.1031);
+    p *= p + 33.33;
+    p *= p + p;
+    return fract(p);
+}
 
 void main()
 {
@@ -33,31 +46,57 @@ void main()
     float bladeHeight = params0.z;
     float maxDist     = params0.w;
 
-    float t = vBlade.y;
+    float phase       = iRand.x;
+    float heightScale = iRand.y;
+    float yaw         = iRand.z;
+    float t           = vBlade.y;
 
     // Distance fade based on the camera's horizontal distance to the blade.
     vec3 camDelta = cameraPos.xyz - iPos;
     camDelta.y = 0.0;
     float camDist = length(camDelta);
     float fade = clamp(1.0 - camDist / max(maxDist, 1.0), 0.0, 1.0);
+    fade = fade * fade * (3.0 - 2.0 * fade); // smoothstep ease so it doesn't pop
 
-    float h = bladeHeight * iRand.y * fade; // far blades collapse to 0 height
-    float w = bladeWidth * mix(1.0, 0.12, t); // taper toward the tip
+    // Per-blade orientation. Each blade faces its own yaw instead of always
+    // billboarding flat at the camera, which is what made the old grass read as
+    // cardboard. 'side' is the width axis, 'fwd' the bending axis.
+    vec3 side = vec3(cos(yaw), 0.0, sin(yaw));
+    vec3 fwd  = vec3(-sin(yaw), 0.0, cos(yaw));
+    vec3 up   = vec3(0.0, 1.0, 0.0);
 
-    // Billboard around the Y axis so the blade always faces the camera.
-    vec3 toCam = camDist > 0.001 ? camDelta / camDist : vec3(0.0, 0.0, 1.0);
-    vec3 right = vec3(toCam.z, 0.0, -toCam.x);
+    // Unfaded height is used for the tangent/normal so far blades (height -> 0)
+    // never produce a zero-length tangent (NaN normals).
+    float hN = bladeHeight * heightScale;
+    float h  = hN * fade;
 
-    // Wind: bend the upper part of the blade along a world direction.
-    vec3 windDir = normalize(vec3(0.8, 0.0, 0.6));
-    float wind = sin(time * 1.6 + iRand.x + dot(iPos.xz, vec2(0.12)))
-               + 0.4 * sin(time * 3.1 + iRand.x);
-    vec3 bend = windDir * (wind * t * t * h * 0.25);
+    // Wind: a low-frequency directional gust plus a high-frequency flutter,
+    // phase-shifted per blade and by world position so the field ripples.
+    float gust    = sin(time * 1.5 + phase + dot(iPos.xz, vec2(0.15)));
+    float flutter = sin(time * 4.3 + phase * 1.7);
+    float baseLean = (hash11(phase) - 0.5) * 0.5;     // resting curve, per blade
+    float bendAngle = baseLean + gust * 0.30 + flutter * 0.06;
 
-    vec3 world = iPos + right * (vBlade.x * w) + vec3(0.0, t * h, 0.0) + bend;
+    // Curve the blade forward; displacement grows with t^2 so the base stays put
+    // and the tip sweeps. Tangent is the analytic derivative of that curve.
+    float sweep = sin(bendAngle);
+    vec3  bend  = fwd * (sweep * h * t * t);
+    vec3  T     = normalize(up * hN + fwd * (sweep * hN * 2.0 * t));
 
-    vWorld = world;
-    vH = t;
-    vFade = fade;
+    // Width tapers to a rounded point; sqrt keeps it full near the base.
+    float w = bladeWidth * heightScale * sqrt(max(0.0, 1.0 - t));
+
+    vec3 world = iPos + side * (vBlade.x * w) + up * (t * h) + bend;
+
+    // Face normal from the curve tangent, then tilt across the width so the
+    // blade reads as a rounded tube rather than a flat sheet.
+    vec3 N = normalize(cross(T, side));
+    N = normalize(N + side * (vBlade.x * 0.5));
+
+    vWorld  = world;
+    vH      = t;
+    vFade   = fade;
+    vNormal = N;
+    vSeed   = hash11(phase * 1.7 + yaw);
     gl_Position = projection * view * vec4(world, 1.0);
 }

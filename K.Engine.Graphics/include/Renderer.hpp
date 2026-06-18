@@ -114,6 +114,12 @@ namespace KDot
         GLint u_PointCount = -1;
         GLint u_FogColor = -1;
         GLint u_FogDensity = -1;
+        // Per-point-light uniform locations, cached once at compile time instead
+        // of being re-queried by string every frame (one of the per-frame costs).
+        GLint u_PointPos[kMaxShaderPointLights];
+        GLint u_PointColor[kMaxShaderPointLights];
+        GLint u_PointIntensity[kMaxShaderPointLights];
+        GLint u_PointRadius[kMaxShaderPointLights];
         glm::mat4 m_ActiveProjection = glm::mat4(1.0f);
         int       m_ShadeMode = 0;
         glm::vec3 m_CameraWorldPos = glm::vec3(0.0f);

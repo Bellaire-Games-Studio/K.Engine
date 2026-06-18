@@ -347,7 +347,17 @@ namespace KDot
         u_PointCount = glGetUniformLocation(m_ShaderProgram, "uPointCount");
         u_FogColor = glGetUniformLocation(m_ShaderProgram, "uFogColor");
         u_FogDensity = glGetUniformLocation(m_ShaderProgram, "uFogDensity");
-        
+
+        // Cache the indexed point-light uniform locations up front.
+        for (int i = 0; i < kMaxShaderPointLights; ++i)
+        {
+            const std::string s = std::to_string(i);
+            u_PointPos[i]       = glGetUniformLocation(m_ShaderProgram, ("uPointPos[" + s + "]").c_str());
+            u_PointColor[i]     = glGetUniformLocation(m_ShaderProgram, ("uPointColor[" + s + "]").c_str());
+            u_PointIntensity[i] = glGetUniformLocation(m_ShaderProgram, ("uPointIntensity[" + s + "]").c_str());
+            u_PointRadius[i]    = glGetUniformLocation(m_ShaderProgram, ("uPointRadius[" + s + "]").c_str());
+        }
+
         m_QuadVertexBufferBase = new Vertex[MaxVertices];
         QuadIndices = new uint32_t[MaxIndices];
         for (uint32_t i = 0; i < MaxIndices; i += 36)
@@ -498,13 +508,12 @@ namespace KDot
         const int budget = std::min(kMaxShaderPointLights, QualitySettings::Get().maxLights);
         std::vector<PointLight> pts = lights.SelectPoints(cameraPos, budget);
         glUniform1i(u_PointCount, (int)pts.size());
-        for (size_t i = 0; i < pts.size(); ++i)
+        for (size_t i = 0; i < pts.size() && i < (size_t)kMaxShaderPointLights; ++i)
         {
-            std::string s = std::to_string(i);
-            glUniform3fv(glGetUniformLocation(m_ShaderProgram, ("uPointPos[" + s + "]").c_str()), 1, &pts[i].position[0]);
-            glUniform3fv(glGetUniformLocation(m_ShaderProgram, ("uPointColor[" + s + "]").c_str()), 1, &pts[i].color[0]);
-            glUniform1f(glGetUniformLocation(m_ShaderProgram, ("uPointIntensity[" + s + "]").c_str()), pts[i].intensity);
-            glUniform1f(glGetUniformLocation(m_ShaderProgram, ("uPointRadius[" + s + "]").c_str()), pts[i].radius);
+            glUniform3fv(u_PointPos[i], 1, &pts[i].position[0]);
+            glUniform3fv(u_PointColor[i], 1, &pts[i].color[0]);
+            glUniform1f(u_PointIntensity[i], pts[i].intensity);
+            glUniform1f(u_PointRadius[i], pts[i].radius);
         }
     }
     void Renderer::BindVertexBuffer()

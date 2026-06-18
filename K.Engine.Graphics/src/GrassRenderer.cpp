@@ -1,9 +1,34 @@
 #include <GrassRenderer.hpp>
 #include <RHI/Types.hpp>
 #include <cstddef>
+#include <vector>
 
 namespace KDot
 {
+    namespace
+    {
+        // A blade is a vertical strip of kSegments quads. Each vertex is
+        // (xSign in [-1,1], heightT in [0,1]); the vertex shader sweeps the
+        // strip into a curved, tapered blade. More segments => smoother curve.
+        constexpr int kBladeSegments = 6;
+
+        std::vector<float> BuildBladeMesh()
+        {
+            std::vector<float> v;
+            v.reserve(kBladeSegments * 6 * 2);
+            auto push = [&](float x, float y) { v.push_back(x); v.push_back(y); };
+            for (int s = 0; s < kBladeSegments; ++s)
+            {
+                const float t0 = static_cast<float>(s) / kBladeSegments;
+                const float t1 = static_cast<float>(s + 1) / kBladeSegments;
+                // Two triangles per segment (a thin quad spanning the blade width).
+                push(-1.0f, t0); push(1.0f, t0); push(1.0f, t1);
+                push(-1.0f, t0); push(1.0f, t1); push(-1.0f, t1);
+            }
+            return v;
+        }
+    }
+
     namespace
     {
         // std140 layout matching the "Constants" block in the grass shaders.
@@ -29,12 +54,12 @@ namespace KDot
         if (!m_Device)
             return false;
 
-        // One tapered blade quad (2 triangles): vBlade = (xSign, heightT).
-        static const float blade[12] = {
-            -1.0f, 0.0f,  1.0f, 0.0f,  1.0f, 1.0f,
-            -1.0f, 0.0f,  1.0f, 1.0f, -1.0f, 1.0f};
+        // Multi-segment blade strip: vBlade = (xSign, heightT) per vertex.
+        const std::vector<float> blade = BuildBladeMesh();
+        m_BladeVerts = static_cast<int>(blade.size() / 2);
 
-        m_BladeBuf    = m_Device->CreateBuffer(rhi::BufferType::Vertex, sizeof(blade), blade, false);
+        m_BladeBuf    = m_Device->CreateBuffer(rhi::BufferType::Vertex,
+                                               blade.size() * sizeof(float), blade.data(), false);
         m_InstanceBuf = m_Device->CreateBuffer(rhi::BufferType::Vertex, 0, nullptr, true);
         m_Ubo         = m_Device->CreateBuffer(rhi::BufferType::Uniform, sizeof(GrassConstants), nullptr, true);
 
@@ -90,6 +115,6 @@ namespace KDot
         m_Device->BindVertexBuffer(0, *m_BladeBuf);
         m_Device->BindVertexBuffer(1, *m_InstanceBuf);
         m_Device->BindUniformBuffer(0, *m_Ubo);
-        m_Device->DrawInstanced(6, static_cast<uint32_t>(m_Count));
+        m_Device->DrawInstanced(static_cast<uint32_t>(m_BladeVerts), static_cast<uint32_t>(m_Count));
     }
 }
