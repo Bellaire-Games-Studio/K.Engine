@@ -51,13 +51,16 @@ What shipped:
 
 ## 2. The fidelity ceiling, in priority order
 
-### A. Tonemapping + sRGB correctness — **highest ROI, do first**
-Render to an HDR target, then map to display with **ACES** or **AgX** and correct
-sRGB. Right now lighting is summed and written straight to an 8‑bit buffer, so
-bright areas clip to flat white and colour is mathematically off. This single
-change makes *everything* — terrain, grass, lights — look "rendered" instead of
-"OpenGL". Cheap, no scene changes. **WebGL2: yes** (render to a float/half FBO,
-full‑screen resolve pass).
+### A. Tonemapping + sRGB correctness — **DONE**
+The scene now renders to an HDR (RGBA16F) target and a fullscreen resolve pass
+applies exposure + a tonemap operator (ACES / Reinhard / Filmic-Hejl, or *None*
+for the raw linear look) + sRGB. Controls live under **Rendering (HDR / Tonemap)**
+in the editor. On web, `EXT_color_buffer_float` is enabled and there's an RGBA8
+fallback if a float colour buffer isn't renderable. This was the highest-ROI
+step: lighting can now exceed 1.0 instead of clipping to flat white.
+
+*Follow-ups here:* bloom is now cheap to add (bright-pass the HDR buffer before
+the resolve), and auto-exposure / eye-adaptation could drive `tonemapExposure`.
 
 ### B. Cascaded shadow maps (sun)
 `QualitySettings` already carries a `shadowMapSize` dial with no pass behind it.
@@ -130,10 +133,14 @@ Cheap wins already applied: grass distance‑culling (was submitting up to 120k
 blades every frame), no more per‑fragment distance `discard`, and cached
 per‑light uniform locations (was a string lookup per light per frame).
 
-The biggest remaining steady‑state cost is **terrain re‑upload**: `DrawMesh`
-re‑`glBufferData`s every chunk every frame even though terrain only changes on
-LOD switch or sculpt. Caching a GPU buffer per chunk (keyed by chunk id + a mesh
-version that bumps on rebuild) and re‑uploading only dirty chunks is the next
-perf item — it removes several MB/frame of redundant uploads. The offscreen
-framebuffer is also a fixed 2560×1440 regardless of window size; tying its
-internal resolution to the fidelity dial would scale cost with quality.
+**Terrain re-upload — DONE.** `DrawMesh` used to `glBufferData` every chunk every
+frame even though terrain only changes on LOD switch or sculpt. There's now a
+per-chunk GPU buffer cache (keyed by chunk index, invalidated by a monotonic
+`TerrainChunk::MeshVersion`), so a chunk is only re-uploaded when its mesh
+actually changes — removing several MB/frame of redundant uploads in the steady
+state.
+
+Remaining: the offscreen framebuffer is a fixed 2560×1440 regardless of window
+size; tying its internal resolution to the fidelity dial would scale cost with
+quality. Grass clumping/segment-LOD and GPU-driven culling are the other open
+items above.

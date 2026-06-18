@@ -825,8 +825,9 @@ namespace KDot
             m_Renderer.BeginStream(m_Camera);
             m_Renderer.SetLights(m_Lights, m_Camera.m_Position);
 
+            std::uint32_t chunkKey = 0;
             for (const TerrainChunk& chunk : m_Terrain.Chunks())
-                m_Renderer.DrawMesh(chunk.Mesh());
+                m_Renderer.DrawMesh(chunk.Mesh(), chunkKey++, chunk.MeshVersion());
 
             DrawSceneItems();
 

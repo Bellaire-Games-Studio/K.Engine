@@ -1,8 +1,17 @@
 #include <TerrainChunk.hpp>
 #include <algorithm>
+#include <cstdint>
 
 namespace KDot
 {
+    namespace
+    {
+        // Monotonic across all chunks: every regenerated mesh gets a unique, ever-
+        // increasing version, so the renderer's per-chunk GPU cache reliably
+        // invalidates after a LOD change, a sculpt edit, or a full terrain rebuild.
+        std::uint32_t s_NextMeshVersion = 0;
+    }
+
     glm::vec4 TerrainChunk::ColorFor(float height, const glm::vec3& normal, const TerrainChunkConfig& cfg)
     {
         const glm::vec3 sand {0.76f, 0.70f, 0.45f};
@@ -118,5 +127,6 @@ namespace KDot
 
         m_LOD = lod;
         m_Dirty = false;
+        m_MeshVersion = ++s_NextMeshVersion; // mesh changed -> invalidate GPU cache
     }
 }

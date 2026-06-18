@@ -34,6 +34,11 @@ namespace KDot
         bool Dirty()  const { return m_Dirty; }
         void MarkDirty() { m_Dirty = true; }
 
+        // Bumps (to a globally unique value) every time the mesh is regenerated.
+        // The renderer caches a GPU buffer per chunk and only re-uploads when this
+        // changes, so static terrain isn't re-sent to the GPU every frame.
+        std::uint32_t MeshVersion() const { return m_MeshVersion; }
+
         const MeshData& Mesh()   const { return m_Mesh; }
         const AABB&     Bounds() const { return m_Bounds; }
         glm::vec3       Center() const { return m_Center; }
@@ -49,6 +54,7 @@ namespace KDot
         int  m_ChunkZ = 0;
         int  m_LOD = -1;
         bool m_Dirty = true;
+        std::uint32_t m_MeshVersion = 0;
         MeshData  m_Mesh;
         AABB      m_Bounds;
         glm::vec3 m_Center{0.0f};

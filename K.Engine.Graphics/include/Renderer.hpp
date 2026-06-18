@@ -4,6 +4,8 @@
 #include <string>
 #include <stdlib.h>
 #include <fstream>
+#include <cstdint>
+#include <unordered_map>
 #include <Math/Vector.hpp>
 #include <Core/MeshData.hpp>
 #include <Light.hpp>
@@ -66,6 +68,10 @@ namespace KDot
         // separate from the quad/cube batch above. Call between BeginStream and
         // EndStream so the view/projection match the rest of the frame.
         void DrawMesh(const MeshData &mesh);
+        // Cached variant: keeps a GPU buffer per cacheKey and only re-uploads when
+        // 'version' changes (see TerrainChunk::MeshVersion). Used for terrain so
+        // static chunks aren't re-uploaded every frame.
+        void DrawMesh(const MeshData &mesh, std::uint32_t cacheKey, std::uint32_t version);
         void DrawCube(const glm::vec3 &position, const glm::vec3 &size, const glm::vec4 &color, float angle, unsigned int textureIndex = 0);
         // Draw a unit cube transformed by an arbitrary matrix (hierarchical world
         // transforms, gizmos). Normals are carried through the matrix.
@@ -86,6 +92,7 @@ namespace KDot
         void SetVertexBufferData(const void *data, GLuint size);
         void AddVertexBuffer();
         void InitMeshBuffers();
+        void ConfigureMeshVertexAttribs(); // MeshVertex attribute layout for a bound VAO/VBO
         void ApplyFrameUniforms(); // binds program + sets projection/view/unlit/camera
         int m_CurrentTextureIndex = 0;
         glm::vec4 m_QuadVertexPositions[4];
@@ -154,6 +161,17 @@ namespace KDot
         GLuint m_MeshVBO = 0;
         GLuint m_MeshIBO = 0;
         bool   m_MeshBuffersReady = false;
+        // Per-key cached mesh GPU buffers (terrain chunks): upload once, re-upload
+        // only when the source mesh version changes.
+        struct MeshCacheEntry
+        {
+            GLuint        vao = 0;
+            GLuint        vbo = 0;
+            GLuint        ibo = 0;
+            GLsizei       indexCount = 0;
+            std::uint32_t version = 0xFFFFFFFFu; // sentinel: never uploaded
+        };
+        std::unordered_map<std::uint32_t, MeshCacheEntry> m_MeshCache;
         glm::mat4 viewMatrix;
         float cameraZoom = 90.0f;
         float m_Height = 1280.0f;

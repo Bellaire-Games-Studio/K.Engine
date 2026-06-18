@@ -23,6 +23,12 @@ namespace KDot
         if (m_TonemapVAO)     glDeleteVertexArrays(1, &m_TonemapVAO);
         if (m_ResolveTexture) glDeleteTextures(1, &m_ResolveTexture);
         if (m_ResolveFBO)     glDeleteFramebuffers(1, &m_ResolveFBO);
+        for (auto &kv : m_MeshCache)
+        {
+            if (kv.second.vao) glDeleteVertexArrays(1, &kv.second.vao);
+            if (kv.second.vbo) glDeleteBuffers(1, &kv.second.vbo);
+            if (kv.second.ibo) glDeleteBuffers(1, &kv.second.ibo);
+        }
     }
 
     namespace
@@ -279,16 +285,9 @@ namespace KDot
         m_QuadIndexCount += 36;
         QuadCount += 6;
     }
-    void Renderer::InitMeshBuffers()
+    void Renderer::ConfigureMeshVertexAttribs()
     {
-        glGenVertexArrays(1, &m_MeshVAO);
-        glGenBuffers(1, &m_MeshVBO);
-        glGenBuffers(1, &m_MeshIBO);
-
-        glBindVertexArray(m_MeshVAO);
-        glBindBuffer(GL_ARRAY_BUFFER, m_MeshVBO);
-        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_MeshIBO);
-
+        // Assumes the target VAO and its GL_ARRAY_BUFFER are already bound.
         glEnableVertexAttribArray(0);
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(MeshVertex), (void *)offsetof(MeshVertex, position));
         glEnableVertexAttribArray(1);
@@ -299,6 +298,18 @@ namespace KDot
         glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, sizeof(MeshVertex), (void *)offsetof(MeshVertex, texCoord));
         glEnableVertexAttribArray(4);
         glVertexAttribIPointer(4, 1, GL_UNSIGNED_INT, sizeof(MeshVertex), (void *)offsetof(MeshVertex, texIndex));
+    }
+
+    void Renderer::InitMeshBuffers()
+    {
+        glGenVertexArrays(1, &m_MeshVAO);
+        glGenBuffers(1, &m_MeshVBO);
+        glGenBuffers(1, &m_MeshIBO);
+
+        glBindVertexArray(m_MeshVAO);
+        glBindBuffer(GL_ARRAY_BUFFER, m_MeshVBO);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_MeshIBO);
+        ConfigureMeshVertexAttribs();
 
         m_MeshBuffersReady = true;
     }
@@ -320,6 +331,49 @@ namespace KDot
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, mesh.indices.size() * sizeof(uint32_t), mesh.indices.data(), GL_DYNAMIC_DRAW);
 
         glDrawElements(GL_TRIANGLES, (GLsizei)mesh.indices.size(), GL_UNSIGNED_INT, 0);
+
+        DrawCallCount++;
+        Triangles += (int)mesh.TriangleCount();
+    }
+    void Renderer::DrawMesh(const MeshData &mesh, std::uint32_t cacheKey, std::uint32_t version)
+    {
+        if (mesh.indices.empty())
+            return;
+
+        ApplyFrameUniforms(); // uses the active projection set by BeginStream
+        if (u_ShadeMode >= 0)
+            glUniform1i(u_ShadeMode, 1); // world meshes use procedural terrain shading
+
+        MeshCacheEntry &e = m_MeshCache[cacheKey];
+        if (e.vao == 0)
+        {
+            glGenVertexArrays(1, &e.vao);
+            glGenBuffers(1, &e.vbo);
+            glGenBuffers(1, &e.ibo);
+            glBindVertexArray(e.vao);
+            glBindBuffer(GL_ARRAY_BUFFER, e.vbo);
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, e.ibo);
+            ConfigureMeshVertexAttribs();
+            e.version = 0xFFFFFFFFu; // force the first upload
+        }
+        else
+        {
+            glBindVertexArray(e.vao);
+        }
+
+        // Only re-upload when the chunk's mesh actually changed (LOD / sculpt /
+        // regen). Static terrain therefore stops re-uploading every frame.
+        if (e.version != version)
+        {
+            glBindBuffer(GL_ARRAY_BUFFER, e.vbo);
+            glBufferData(GL_ARRAY_BUFFER, mesh.vertices.size() * sizeof(MeshVertex), mesh.vertices.data(), GL_STATIC_DRAW);
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, e.ibo);
+            glBufferData(GL_ELEMENT_ARRAY_BUFFER, mesh.indices.size() * sizeof(uint32_t), mesh.indices.data(), GL_STATIC_DRAW);
+            e.indexCount = (GLsizei)mesh.indices.size();
+            e.version = version;
+        }
+
+        glDrawElements(GL_TRIANGLES, e.indexCount, GL_UNSIGNED_INT, 0);
 
         DrawCallCount++;
         Triangles += (int)mesh.TriangleCount();
