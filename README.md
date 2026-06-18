@@ -1,26 +1,34 @@
 # K.Engine
 <img width="1918" height="922" alt="image" src="https://github.com/user-attachments/assets/531c1653-c5fd-4161-ad41-7502e279f715" />
 
-K.Engine is a WIP custom game engine written in C++, targeting a fidelity level
-**roughly two-thirds of the way from Iruna Online to Elden Ring (~0.65)** with a
-single, runtime-adjustable detail dial.
+K.Engine is a WIP custom game engine written in C++.
 
 You can test the current development build [here](https://bellaire-games-studio.github.io/K.Engine/build/bin/K.Engine.html).
 The build folder holds a current build of the repository.
 
 ## Features
 
-- [ ] 2D Rendering
+- [X] 2D Rendering (orthographic sprite/HUD pass)
 - [X] 3D Rendering
+- [X] Lighting (ambient + directional sun + point lights, Blinn-Phong, fog)
+- [X] Mouse input + screen-ray picking (click-to-sculpt, look/zoom)
 - [X] Procedural Terrain (chunked, LOD, runtime sculpting)
+- [X] GPU procedural terrain texturing (height/slope material splatting)
+- [X] GPU-instanced grass (wind-animated, density from the fidelity dial)
 - [X] Physics (rigidbody, AABB/sphere, raycasts, terrain collision)
 - [X] Entity Component System
+- [X] Scene editor: World Explorer (parent/child tree) + Properties (per-component) inspector
+- [X] Parent/child hierarchy (relative transforms; re-parent keeps world position)
+- [X] Play / Pause / Stop (physics + scripts frozen while editing; non-destructive)
+- [X] Scene save / load (`.kscene` text format)
+- [X] C++ scripting (`ScriptBehavior` behaviours with authored parameters, native + web)
 - [X] Adjustable fidelity / LOD ("0.65" dial)
 - [ ] Audio
 - [ ] Animation
 - [X] Online/In-browser (Emscripten / WebGL2)
-- [ ] Native Windows / Linux *(roadmap)*
-- [ ] WebGPU backend *(roadmap)*
+- [X] Native desktop (OpenGL 3.3 core via GLFW + GLEW) — Linux build+run verified
+- [ ] WebGPU backend *(planned; RHI seam in place)*
+- [ ] Vulkan backend *(planned)*
 - [ ] Multithreading
 
 ## Modules
@@ -31,8 +39,38 @@ The build folder holds a current build of the repository.
 | `K.Engine.Graphics` | Batched renderer (quads/cubes), `DrawMesh` for terrain, camera, lights |
 | `K.Engine.Physics` | Shapes, collision manifolds, rigidbodies, `PhysicsWorld` (broadphase + solver), raycasts |
 | `K.Engine.Terrain` | `HeightField`, LOD `TerrainChunk` meshing, `Terrain` (noise gen + sculpting) |
-| `K.Engine.Common` | ECS, math, events, `QualitySettings` dial, `Transform`, `MeshData`, noise |
+| `K.Engine.Common` | ECS, math, events, `QualitySettings` dial, `Transform`, scene components, noise |
 | `K.Engine.Input` | Keyboard/mouse polling, platform window |
+| `K.Engine.Editor` | Scene serializer (`.kscene`) + C++ scripting (`ScriptBehavior`, registry, built-ins) |
+
+## Editor, scenes & scripting
+
+The app is an editor over an ECS world. Every world item is an entity with
+components (`Transform`, `Prop`, `LightSource`, `Rigidbody`, `Collider`,
+`Script`, ...); the **Explorer** lists them and the **Properties** panel edits
+them. **Play** snapshots the world and runs physics + scripts; **Stop** restores
+the snapshot, so editing is always non-destructive. **File → Save/Open Scene**
+serializes the world (and environment) to a `.kscene` text file.
+
+Game logic lives in C++ behaviours — *engine for the game, not games for the
+engine*. A behaviour derives from `KDot::ScriptBehavior`, uses the `KDot`
+namespace, and is registered by name; attach it via a `Script` component. Because
+behaviours compile into the binary, the same code runs on native **and** web
+(no separate scripting VM):
+
+```cpp
+class Spin : public KDot::ScriptBehavior {
+    void OnUpdate(float dt) override {
+        if (auto* t = GetTransform())
+            t->rotation = glm::angleAxis(glm::radians(90.0f * dt),
+                                         glm::vec3(0, 1, 0)) * t->rotation;
+    }
+};
+KE_REGISTER_SCRIPT(Spin, "Spin"); // now selectable in the Script component
+
+```
+
+Built-ins: `Spin`, `Hover`, `Patrol` (see `K.Engine.Editor/src/Script/BuiltinScripts.cpp`).
 
 ## The fidelity dial
 
@@ -71,16 +109,55 @@ budget and texture sampling, so a settings menu only ever touches one call.
   resolution with friction and Baumgarte positional correction.
 - Heightfield ground collision and world raycasts (against colliders + terrain).
 
-## Roadmap: cross-platform & WebGPU
+## Rendering & input
 
-The new gameplay systems (terrain, physics, ECS, config, math) are deliberately
-**graphics-API-agnostic** — pure C++/GLM with no GL coupling — so they already
-compile toward any backend. The remaining cross-platform work is isolated to the
-window + render layers:
+- **Lighting**: ambient + a directional "sun" + point lights (culled to the
+  nearest few, capped by the fidelity dial) with Blinn-Phong specular and
+  exp2 distance fog. Lights live in `LightManager` (plain data) and are turned
+  into shader uniforms by the renderer.
+- **Procedural terrain texturing (GPU)**: terrain is shaded in the fragment
+  shader from world height + slope, blending sand/grass/rock/snow and broken up
+  with GPU value-noise detail — no texture assets required, all per-pixel work
+  on the GPU.
+- **GPU-instanced grass**: the CPU scatters blade instances once (`GrassField`,
+  density + view distance from the fidelity dial, skipping water/steep/rock);
+  the GPU draws them in **one instanced call**, doing the billboarding, taper,
+  wind sway and distance fade in the vertex shader.
+- **2D pass**: `Renderer::Begin2D/End2D` switch to an orthographic, unlit,
+  alpha-blended mode for HUD/sprites (the demo draws a crosshair, status bars,
+  and a cursor brush marker).
+- **Mouse**: right-drag to look, scroll to zoom, and **left-click to sculpt**
+  the terrain at the picked point. Picking builds a world ray from the cursor
+  (`Picking::ScreenToRay`) and queries `PhysicsWorld::Raycast`.
 
-1. Abstract the window/main-loop off Emscripten (native GLFW + a desktop game loop).
-2. Add a desktop GL path (glad/GLEW) behind the existing `Renderer` so Windows/Linux build.
-3. Introduce a small RHI seam and a **WebGPU (Dawn/wgpu)** backend behind it.
+Demo controls: `WASD` fly · right-drag look · scroll zoom ·
+left-click sculpt (hold `Shift` to lower) · `R` re-drop the ball.
+
+## Cross-platform
+
+The engine now builds on both the web (Emscripten/WebGL2) and **native desktop**
+(GLFW + GLEW, OpenGL 3.3 core). Platform differences are isolated:
+
+- `Platform/Platform.hpp` — platform detection (`KE_PLATFORM_WEB/WINDOWS/LINUX/MACOS`).
+- `Platform/GL.hpp` — one place for the GL + window-system includes.
+- `Window::Create` returns a `JavascriptWindow` (web) or `DesktopWindow` (native);
+  the main loop is `emscripten_set_main_loop` on web and a plain `while` loop on desktop.
+- One set of shaders authored as GLSL ES 3.00; `ShaderUtil` rewrites them to
+  GL 3.3 core on desktop on the fly.
+
+### Roadmap: WebGPU & Vulkan
+
+The gameplay systems (terrain, physics, ECS, config, math) are graphics-API
+agnostic, so the remaining work is backend-only, behind the RHI seam
+(`RHI/` — `Device`/`Buffer`/`Pipeline` interfaces + `GraphicsAPI.hpp`, selected
+via the `KE_BACKEND_*` CMake options):
+
+1. ✅ Native desktop OpenGL (window/loop/RHI seam, shader adaptation).
+2. ✅ RHI device abstraction + OpenGL backend (`RHI/GLDevice`); `GrassRenderer`
+   ported onto it (buffers + pipeline + std140 uniform buffer, zero direct GL).
+3. **Vulkan** — implement `rhi::Device` for Vulkan; port the remaining renderer.
+   Native high-performance desktop path.
+4. **WebGPU** — implement `rhi::Device` for WebGPU; move the web target onto it.
 
 ## Building (web)
 
@@ -89,6 +166,21 @@ window + render layers:
 - run `build.bat`
 - Open `build/bin/K.Engine.html` in your browser
 
+## Building (native desktop)
+
+Install the dependencies, then a normal CMake build:
+
+- **Linux**: `sudo apt install build-essential cmake libglfw3-dev libglew-dev libgl1-mesa-dev`
+- **macOS**: `brew install cmake glfw glew`
+- **Windows**: install [CMake](https://cmake.org/download/) + Visual Studio, and
+  `vcpkg install glfw3 glew` (configure with the vcpkg toolchain file)
+
+```sh
+cmake -S . -B build-native -DCMAKE_BUILD_TYPE=Release
+cmake --build build-native -j
+./build-native/bin/K.Engine
+```
+
 The platform-agnostic modules (Physics / Terrain / Common) can also be compiled
 and unit-tested with a normal host compiler (e.g. `g++ -std=c++17 -I glm ...`),
-which is how they are validated independently of the WebGL build.
+independently of any graphics backend.

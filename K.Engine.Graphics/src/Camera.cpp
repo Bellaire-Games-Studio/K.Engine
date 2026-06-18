@@ -29,4 +29,18 @@ namespace KDot
         if (Input::IsKeyPressed(KDot::Key::D))
             m_Position += m_Right * movementSpeed * static_cast<float>(deltaTime);
     }
+    void Camera::ProcessMouse(float dx, float dy)
+    {
+        m_Yaw += dx * mouseSensitivity;
+        m_Pitch -= dy * mouseSensitivity; // screen-y grows downward
+        if (m_Pitch > 89.0f) m_Pitch = 89.0f;
+        if (m_Pitch < -89.0f) m_Pitch = -89.0f;
+        Update();
+    }
+    void Camera::ProcessScroll(float dy)
+    {
+        zoom -= dy;
+        if (zoom < 1.0f) zoom = 1.0f;
+        if (zoom > 120.0f) zoom = 120.0f;
+    }
 }

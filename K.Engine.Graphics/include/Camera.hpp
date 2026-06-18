@@ -10,7 +10,11 @@ namespace KDot
         virtual ~Camera() = default;
         void Update();
         void Update(const double deltaTime);
+        void ProcessMouse(float dx, float dy); // mouse-look (pixels of cursor movement)
+        void ProcessScroll(float dy);          // zoom (scroll wheel delta)
+        void SetMovementSpeed(float s) { movementSpeed = s; }
         glm::mat4 GetViewMatrix() const { return glm::lookAt(m_Position, m_Position + m_Front, m_Up); }
+        glm::vec3 Front() const { return m_Front; } // normalized view direction
         float getZoom() const { return zoom; }
         glm::vec3 m_Position = glm::vec3(0.0f, 0.0f, 3.0f);
 

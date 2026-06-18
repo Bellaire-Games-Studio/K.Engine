@@ -1,5 +1,6 @@
 #include <ImGuiLayer.hpp>
 #include <Application.hpp>
+#include <Platform/Platform.hpp>
 namespace KDot
 {
     ImGuiLayer::ImGuiLayer()
@@ -23,7 +24,11 @@ namespace KDot
         
         Application& app = Application::Get();
         ImGui_ImplGlfw_InitForOpenGL((GLFWwindow*)Application::Get().GetWindow().GetNativeWindow(), true);
+#if defined(KE_PLATFORM_WEB)
         ImGui_ImplOpenGL3_Init("#version 300 es");
+#else
+        ImGui_ImplOpenGL3_Init("#version 330");
+#endif
     }
     void ImGuiLayer::OnDetach()
     {

@@ -6,17 +6,13 @@
 #include <fstream>
 #include <Math/Vector.hpp>
 #include <Core/MeshData.hpp>
+#include <Light.hpp>
 #include <glm.hpp>
 #include <gtx/rotate_vector.hpp>
 #include <gtx/transform.hpp>
 #include <ext.hpp>
 #include <Camera.hpp>
-
-#ifdef __EMSCRIPTEN__
-#include <emscripten.h>
-#include <GL/glew.h>
-#include <GLFW/glfw3.h>
-#endif
+#include <Platform/GL.hpp>
 namespace KDot
 {
     float closestResolution(int n, int multiple);
@@ -45,6 +41,14 @@ namespace KDot
         void UnbindFrameBuffer();
         void BeginStream(Camera &camera);
         void EndStream();
+        // Orthographic 2D pass for HUD / sprites. Coordinates are in pixels with
+        // (0,0) at the top-left of the given virtual size. Lighting + depth test
+        // are disabled and alpha blending enabled for the duration.
+        void Begin2D(float width, float height);
+        void End2D();
+        // Upload scene lighting (point lights are culled to the nearest few,
+        // capped by QualitySettings). Call once per frame inside BeginStream.
+        void SetLights(const LightManager &lights, const glm::vec3 &cameraPos);
         GLuint GetFrameBufferTexture() { return m_Texture; }
         void LoadTexture(const char *path);
         // Draw an arbitrary indexed mesh (e.g. a terrain chunk) with the active
@@ -53,6 +57,9 @@ namespace KDot
         // EndStream so the view/projection match the rest of the frame.
         void DrawMesh(const MeshData &mesh);
         void DrawCube(const glm::vec3 &position, const glm::vec3 &size, const glm::vec4 &color, float angle, unsigned int textureIndex = 0);
+        // Draw a unit cube transformed by an arbitrary matrix (hierarchical world
+        // transforms, gizmos). Normals are carried through the matrix.
+        void DrawCube(const glm::mat4 &transform, const glm::vec4 &color, unsigned int textureIndex = 0);
         void DrawQuad(const glm::vec2 &position, const glm::vec2 &size, const glm::vec4 &color, float rotation, const glm::vec2 &center);
         void DrawQuad(const glm::vec3 &position, const glm::vec2 &size, const glm::vec4 &color);
         void DrawQuad(const glm::vec2 &position, const glm::vec2 &size, const glm::vec4 &color);
@@ -68,8 +75,8 @@ namespace KDot
         void InitiateVertexArray();
         void SetVertexBufferData(const void *data, GLuint size);
         void AddVertexBuffer();
-        void AddIndexBuffer();
         void InitMeshBuffers();
+        void ApplyFrameUniforms(); // binds program + sets projection/view/unlit/camera
         int m_CurrentTextureIndex = 0;
         glm::vec4 m_QuadVertexPositions[4];
         glm::vec4 m_CubeVertexPositions[8];
@@ -78,13 +85,12 @@ namespace KDot
         uint32_t *QuadIndices;
 
         void StartBatch();
+        void ResetBatch();
         void NextBatch();
         void BindVertexBuffer();
         void UnbindVertexBuffer();
         void BindVertexArray();
         void UnbindVertexArray();
-        void BindIndexBuffer();
-        void UnbindIndexBuffer();
         const uint32_t MaxCubes = 5000;
         const uint32_t MaxQuads = MaxCubes * 6;
         const uint32_t MaxVertices = MaxQuads * 4;
@@ -93,14 +99,28 @@ namespace KDot
         Vertex *m_QuadVertexBufferBase = nullptr;
         Vertex *m_QuadVertexBufferPtr = nullptr;
 
+        static constexpr int kMaxShaderPointLights = 16;
         GLint u_ProjectionMat;
         GLint u_ViewMat;
         GLint u_ModelMat;
+        // Lighting / mode uniform locations (cached at compile time).
+        GLint u_ShadeMode = -1; // 0=lit vertex colour, 1=procedural terrain, 2=unlit 2D
+        GLint u_CameraPos = -1;
+        GLint u_AmbientColor = -1;
+        GLint u_AmbientIntensity = -1;
+        GLint u_SunDir = -1;
+        GLint u_SunColor = -1;
+        GLint u_SunIntensity = -1;
+        GLint u_PointCount = -1;
+        GLint u_FogColor = -1;
+        GLint u_FogDensity = -1;
+        glm::mat4 m_ActiveProjection = glm::mat4(1.0f);
+        int       m_ShadeMode = 0;
+        glm::vec3 m_CameraWorldPos = glm::vec3(0.0f);
         GLuint m_ShaderProgram;
         GLuint m_FrameBuffer;
         GLuint m_VertexArray;
         GLuint m_VertexBuffer;
-        GLuint m_IndexBuffer;
         GLuint m_RenderBuffer;
         GLuint m_Texture;
         // Dedicated buffers for DrawMesh (terrain / arbitrary indexed geometry).

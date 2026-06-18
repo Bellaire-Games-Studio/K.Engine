@@ -28,10 +28,11 @@ namespace KDot
             Window& GetWindow() { return *m_Window; }
             ImGuiLayer* GetImGuiLayer() { return m_ImGuiLayer; }
             void Quit();
+            void RunFrame(); // one iteration of the main loop (platform-agnostic)
 
             static Application& Get() { return *s_Instance; }
             const Specification GetSpecification() const { return m_Specification; }
-            float m_LastFrameTime = 0.0f;
+            double m_LastFrameTime = 0.0;
             
         private:
             void Run();
