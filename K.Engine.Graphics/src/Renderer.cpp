@@ -23,6 +23,15 @@ namespace KDot
         if (m_TonemapVAO)     glDeleteVertexArrays(1, &m_TonemapVAO);
         if (m_ResolveTexture) glDeleteTextures(1, &m_ResolveTexture);
         if (m_ResolveFBO)     glDeleteFramebuffers(1, &m_ResolveFBO);
+        if (m_BrightProgram)  glDeleteProgram(m_BrightProgram);
+        if (m_BlurProgram)    glDeleteProgram(m_BlurProgram);
+        if (m_BrightTex)      glDeleteTextures(1, &m_BrightTex);
+        if (m_BrightFBO)      glDeleteFramebuffers(1, &m_BrightFBO);
+        for (int i = 0; i < 2; ++i)
+        {
+            if (m_BlurTex[i]) glDeleteTextures(1, &m_BlurTex[i]);
+            if (m_BlurFBO[i]) glDeleteFramebuffers(1, &m_BlurFBO[i]);
+        }
         for (auto &kv : m_MeshCache)
         {
             if (kv.second.vao) glDeleteVertexArrays(1, &kv.second.vao);
@@ -102,7 +111,9 @@ namespace KDot
             "in vec2 vUV;\n"
             "out vec4 fragColor;\n"
             "uniform sampler2D uHdr;\n"
+            "uniform sampler2D uBloom;\n"
             "uniform float uExposure;\n"
+            "uniform float uBloomIntensity;\n"
             "uniform int uMode;\n"
             "vec3 aces(vec3 x){ float a=2.51,b=0.03,c=2.43,d=0.59,e=0.14;\n"
             "    return clamp((x*(a*x+b))/(x*(c*x+d)+e),0.0,1.0); }\n"
@@ -110,13 +121,51 @@ namespace KDot
             "vec3 hejl(vec3 x){ vec3 X=max(vec3(0.0),x-0.004);\n"
             "    return (X*(6.2*X+0.5))/(X*(6.2*X+1.7)+0.06); }\n"
             "void main(){\n"
-            "    vec3 hdr = texture(uHdr, vUV).rgb * uExposure;\n"
+            "    vec3 hdr = texture(uHdr, vUV).rgb;\n"
+            "    hdr += texture(uBloom, vUV).rgb * uBloomIntensity;\n" // add glow in linear HDR
+            "    hdr *= uExposure;\n"
             "    vec3 c;\n"
             "    if (uMode == 0) { fragColor = vec4(hdr, 1.0); return; }\n"   // linear passthrough
             "    else if (uMode == 2) c = pow(reinhard(hdr), vec3(1.0/2.2));\n"
             "    else if (uMode == 3) c = hejl(hdr);\n"                       // already sRGB-encoded
             "    else c = pow(aces(hdr), vec3(1.0/2.2));\n"
             "    fragColor = vec4(c, 1.0);\n"
+            "}\n";
+
+        // Bloom bright-pass: keep only the energy above a luminance threshold.
+        const char* kBrightFrag =
+            "#version 300 es\n"
+            "precision highp float;\n"
+            "in vec2 vUV;\n"
+            "out vec4 fragColor;\n"
+            "uniform sampler2D uScene;\n"
+            "uniform float uThreshold;\n"
+            "void main(){\n"
+            "    vec3 c = texture(uScene, vUV).rgb;\n"
+            "    float b = max(max(c.r, c.g), c.b);\n"
+            "    float keep = max(b - uThreshold, 0.0) / max(b, 1e-4);\n"
+            "    fragColor = vec4(c * keep, 1.0);\n"
+            "}\n";
+
+        // Separable 9-tap Gaussian; uHorizontal picks the axis.
+        const char* kBlurFrag =
+            "#version 300 es\n"
+            "precision highp float;\n"
+            "in vec2 vUV;\n"
+            "out vec4 fragColor;\n"
+            "uniform sampler2D uTex;\n"
+            "uniform vec2 uTexel;\n"
+            "uniform float uHorizontal;\n"
+            "void main(){\n"
+            "    float w[5];\n"
+            "    w[0]=0.227027; w[1]=0.1945946; w[2]=0.1216216; w[3]=0.054054; w[4]=0.016216;\n"
+            "    vec2 dir = uHorizontal > 0.5 ? vec2(uTexel.x, 0.0) : vec2(0.0, uTexel.y);\n"
+            "    vec3 result = texture(uTex, vUV).rgb * w[0];\n"
+            "    for (int i = 1; i < 5; ++i){\n"
+            "        result += texture(uTex, vUV + dir * float(i)).rgb * w[i];\n"
+            "        result += texture(uTex, vUV - dir * float(i)).rgb * w[i];\n"
+            "    }\n"
+            "    fragColor = vec4(result, 1.0);\n"
             "}\n";
     }
     bool Renderer::InitShader(const char **ShaderSource, GLenum type)
@@ -765,17 +814,117 @@ namespace KDot
         m_TonemapProgram = BuildStandaloneProgram(kTonemapVert, kTonemapFrag);
         if (m_TonemapProgram)
         {
-            u_TmHdr      = glGetUniformLocation(m_TonemapProgram, "uHdr");
-            u_TmExposure = glGetUniformLocation(m_TonemapProgram, "uExposure");
-            u_TmMode     = glGetUniformLocation(m_TonemapProgram, "uMode");
+            u_TmHdr            = glGetUniformLocation(m_TonemapProgram, "uHdr");
+            u_TmBloom          = glGetUniformLocation(m_TonemapProgram, "uBloom");
+            u_TmExposure       = glGetUniformLocation(m_TonemapProgram, "uExposure");
+            u_TmBloomIntensity = glGetUniformLocation(m_TonemapProgram, "uBloomIntensity");
+            u_TmMode           = glGetUniformLocation(m_TonemapProgram, "uMode");
         }
         glGenVertexArrays(1, &m_TonemapVAO); // empty VAO; positions come from gl_VertexID
+
+        BuildBloomResources(width / 2, height / 2); // bloom runs at half resolution
+    }
+
+    void Renderer::BuildBloomResources(int width, int height)
+    {
+        m_BloomW = width;
+        m_BloomH = height;
+
+        auto makeTarget = [&](GLuint& fbo, GLuint& tex) {
+            glGenFramebuffers(1, &fbo);
+            glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+            glGenTextures(1, &tex);
+            glBindTexture(GL_TEXTURE_2D, tex);
+            // RGBA16F is texture-filterable in ES3/WebGL2, so the blur can sample linearly.
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, width, height, 0, GL_RGBA, GL_HALF_FLOAT, NULL);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+            if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+                std::cout << "Bloom framebuffer not complete" << std::endl;
+        };
+        makeTarget(m_BrightFBO, m_BrightTex);
+        makeTarget(m_BlurFBO[0], m_BlurTex[0]);
+        makeTarget(m_BlurFBO[1], m_BlurTex[1]);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+
+        m_BrightProgram = BuildStandaloneProgram(kTonemapVert, kBrightFrag);
+        if (m_BrightProgram)
+        {
+            u_BrScene     = glGetUniformLocation(m_BrightProgram, "uScene");
+            u_BrThreshold = glGetUniformLocation(m_BrightProgram, "uThreshold");
+        }
+        m_BlurProgram = BuildStandaloneProgram(kTonemapVert, kBlurFrag);
+        if (m_BlurProgram)
+        {
+            u_BlTex        = glGetUniformLocation(m_BlurProgram, "uTex");
+            u_BlTexel      = glGetUniformLocation(m_BlurProgram, "uTexel");
+            u_BlHorizontal = glGetUniformLocation(m_BlurProgram, "uHorizontal");
+        }
+    }
+
+    // Bright-pass the HDR scene then ping-pong a separable blur. Returns the
+    // texture holding the final bloom (or 0 if bloom can't run this frame).
+    GLuint Renderer::RenderBloom()
+    {
+        if (!bloomEnabled || !m_BrightProgram || !m_BlurProgram || !m_TonemapVAO)
+            return 0;
+
+        glViewport(0, 0, m_BloomW, m_BloomH);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_BLEND);
+        glBindVertexArray(m_TonemapVAO);
+
+        // 1) Bright-pass scene -> m_BrightTex.
+        glBindFramebuffer(GL_FRAMEBUFFER, m_BrightFBO);
+        glUseProgram(m_BrightProgram);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, m_Texture);
+        if (u_BrScene >= 0)     glUniform1i(u_BrScene, 0);
+        if (u_BrThreshold >= 0) glUniform1f(u_BrThreshold, bloomThreshold);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+
+        // 2) Separable blur, ping-ponging between the two blur targets.
+        glUseProgram(m_BlurProgram);
+        if (u_BlTex >= 0)   glUniform1i(u_BlTex, 0);
+        if (u_BlTexel >= 0) glUniform2f(u_BlTexel, 1.0f / (float)m_BloomW, 1.0f / (float)m_BloomH);
+
+        GLuint src = m_BrightTex;
+        const int kIterations = 2; // 2 H+V passes => a soft, wide glow
+        for (int i = 0; i < kIterations; ++i)
+        {
+            // Horizontal: src -> blur[0]
+            glBindFramebuffer(GL_FRAMEBUFFER, m_BlurFBO[0]);
+            if (u_BlHorizontal >= 0) glUniform1f(u_BlHorizontal, 1.0f);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, src);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+
+            // Vertical: blur[0] -> blur[1]
+            glBindFramebuffer(GL_FRAMEBUFFER, m_BlurFBO[1]);
+            if (u_BlHorizontal >= 0) glUniform1f(u_BlHorizontal, 0.0f);
+            glBindTexture(GL_TEXTURE_2D, m_BlurTex[0]);
+            glDrawArrays(GL_TRIANGLES, 0, 3);
+
+            src = m_BlurTex[1];
+        }
+
+        glBindVertexArray(0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        return m_BlurTex[1];
     }
 
     void Renderer::ResolveToneMap()
     {
         if (!m_TonemapProgram || !m_ResolveFBO)
             return; // fall back to displaying the raw scene texture
+
+        // Bloom first (writes its own half-res targets), then the final resolve.
+        const GLuint bloomTex = RenderBloom();
+        const float bloomAmount = (bloomTex != 0) ? bloomIntensity : 0.0f;
 
         glBindFramebuffer(GL_FRAMEBUFFER, m_ResolveFBO);
         glViewport(0, 0, 2560, 1440);
@@ -785,14 +934,21 @@ namespace KDot
         glUseProgram(m_TonemapProgram);
         glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, m_Texture);
-        if (u_TmHdr >= 0)      glUniform1i(u_TmHdr, 0);
-        if (u_TmExposure >= 0) glUniform1f(u_TmExposure, tonemapExposure);
-        if (u_TmMode >= 0)     glUniform1i(u_TmMode, tonemapMode);
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, bloomTex != 0 ? bloomTex : m_Texture); // valid sampler even when off
+        if (u_TmHdr >= 0)            glUniform1i(u_TmHdr, 0);
+        if (u_TmBloom >= 0)          glUniform1i(u_TmBloom, 1);
+        if (u_TmExposure >= 0)       glUniform1f(u_TmExposure, tonemapExposure);
+        if (u_TmBloomIntensity >= 0) glUniform1f(u_TmBloomIntensity, bloomAmount);
+        if (u_TmMode >= 0)           glUniform1i(u_TmMode, tonemapMode);
 
         glBindVertexArray(m_TonemapVAO);
         glDrawArrays(GL_TRIANGLES, 0, 3);
         glBindVertexArray(0);
 
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glActiveTexture(GL_TEXTURE0);
         glBindTexture(GL_TEXTURE_2D, 0);
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glEnable(GL_DEPTH_TEST);

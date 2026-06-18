@@ -1211,6 +1211,11 @@ namespace KDot
             ImGui::Combo("Operator", &m_Renderer.tonemapMode, modes, IM_ARRAYSIZE(modes));
             ImGui::SliderFloat("Exposure", &m_Renderer.tonemapExposure, 0.1f, 4.0f, "%.2f");
             ImGui::Separator();
+            ImGui::TextUnformatted("Bloom");
+            ImGui::Checkbox("Enabled", &m_Renderer.bloomEnabled);
+            ImGui::SliderFloat("Threshold", &m_Renderer.bloomThreshold, 0.0f, 4.0f, "%.2f");
+            ImGui::SliderFloat("Intensity", &m_Renderer.bloomIntensity, 0.0f, 2.0f, "%.2f");
+            ImGui::Separator();
             ImGui::TextDisabled("Scene buffer: %s", m_Renderer.HdrEnabled() ? "RGBA16F (HDR)"
                                                                             : "RGBA8 (float unsupported)");
             ImGui::TextWrapped("The scene renders to a float buffer; this pass applies exposure, the "

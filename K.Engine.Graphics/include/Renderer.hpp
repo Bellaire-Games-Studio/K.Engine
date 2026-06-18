@@ -49,6 +49,9 @@ namespace KDot
         // Post controls (read by the resolve pass; editable from the inspector).
         float tonemapExposure = 1.0f;
         int   tonemapMode = 1; // 0 None(linear) · 1 ACES · 2 Reinhard · 3 Filmic(Hejl)
+        bool  bloomEnabled = true;
+        float bloomThreshold = 1.0f; // luminance above which pixels bloom (HDR: >1 = overbright)
+        float bloomIntensity = 0.6f;
         void BeginStream(Camera &camera);
         void EndStream();
         // Orthographic 2D pass for HUD / sprites. Coordinates are in pixels with
@@ -154,8 +157,21 @@ namespace KDot
         GLint  u_TmHdr = -1;
         GLint  u_TmExposure = -1;
         GLint  u_TmMode = -1;
+        GLint  u_TmBloom = -1;
+        GLint  u_TmBloomIntensity = -1;
         bool   m_HdrEnabled = false;
         void   BuildTonemapResources(int width, int height);
+        // Bloom (bright-pass + separable blur on a half-res HDR chain).
+        int    m_BloomW = 0, m_BloomH = 0;
+        GLuint m_BrightFBO = 0, m_BrightTex = 0;
+        GLuint m_BlurFBO[2] = {0, 0};
+        GLuint m_BlurTex[2] = {0, 0};
+        GLuint m_BrightProgram = 0;
+        GLuint m_BlurProgram = 0;
+        GLint  u_BrScene = -1, u_BrThreshold = -1;
+        GLint  u_BlTex = -1, u_BlTexel = -1, u_BlHorizontal = -1;
+        void   BuildBloomResources(int width, int height);
+        GLuint RenderBloom(); // returns the texture holding the final blurred bloom
         // Dedicated buffers for DrawMesh (terrain / arbitrary indexed geometry).
         GLuint m_MeshVAO = 0;
         GLuint m_MeshVBO = 0;
