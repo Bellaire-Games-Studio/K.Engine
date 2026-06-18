@@ -1377,6 +1377,11 @@ namespace KDot
 
     int Renderer::LoadTextureFile(const char* path)
     {
+        // Reuse an already-loaded texture with the same path (avoids duplicates
+        // when the same built-in is picked repeatedly).
+        for (std::size_t i = 0; i < m_TexturePaths.size(); ++i)
+            if (m_TexturePaths[i] == path)
+                return (int)i + 1;
         if ((int)m_Textures.size() >= kShadowUnit)
             return 0;
         int w = 0, h = 0, n = 0;

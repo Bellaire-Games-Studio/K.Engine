@@ -14,7 +14,7 @@ The build folder holds a current build of the repository.
 - [X] HDR pipeline + tonemapping (ACES/Reinhard/Filmic) + bloom
 - [X] SSAO (screen-space ambient occlusion / contact shadows)
 - [X] Cascaded shadow maps (sun; 3 cascades, PCF)
-- [X] Textured props (load an image or built-in checkerboard onto a cube)
+- [X] Textured props (bundled CC0 textures, image-file loading, or checkerboard — onto a cube)
 - [X] Mouse input + screen-ray picking (click-to-sculpt, look/zoom)
 - [X] Procedural Terrain (chunked, LOD, runtime sculpting)
 - [X] GPU procedural terrain texturing (height/slope material splatting)

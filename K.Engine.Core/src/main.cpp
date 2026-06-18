@@ -1398,10 +1398,24 @@ namespace KDot
                     ImGui::ColorEdit4("Color", &p->color.x);
                     ImGui::DragFloat3("Size", &p->size.x, 0.1f, 0.01f, 1000.0f);
 
-                    // Texture: load an image file or drop a built-in checkerboard on
-                    // the cube. The colour above tints the sampled texture.
+                    // Texture: pick a bundled texture, load an image file, or use a
+                    // built-in checkerboard. The colour above tints the sampled texture.
                     const char* texName = (p->texture > 0) ? m_Renderer.TexturePath(p->texture) : "";
                     ImGui::Text("Texture: %s", p->texture > 0 ? (texName[0] ? texName : "(slot)") : "none");
+
+                    static const char* kBuiltinTex[] = {
+                        "uvgrid", "brick", "planks", "cobble", "tiles", "concrete", "grass", "metal"};
+                    if (ImGui::BeginCombo("Built-in", "pick..."))
+                    {
+                        for (const char* nm : kBuiltinTex)
+                            if (ImGui::Selectable(nm))
+                            {
+                                const std::string path = std::string("Assets/Textures/") + nm + ".png";
+                                const int slot = m_Renderer.LoadTextureFile(path.c_str());
+                                if (slot > 0) p->texture = slot;
+                            }
+                        ImGui::EndCombo();
+                    }
                     ImGui::InputText("Image path", m_TexPath, sizeof(m_TexPath));
                     if (ImGui::SmallButton("Load file"))
                     {
