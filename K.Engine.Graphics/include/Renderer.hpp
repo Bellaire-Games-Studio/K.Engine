@@ -39,6 +39,14 @@ namespace KDot
         void GenerateFrameBuffer();
         void BindFrameBuffer();
         void UnbindFrameBuffer();
+        // Tonemap + sRGB resolve: the scene is rendered into an HDR (float) target,
+        // then this maps it down to the 8-bit texture the editor displays. Call
+        // once, after the scene + HUD have been drawn into the framebuffer.
+        void ResolveToneMap();
+        bool HdrEnabled() const { return m_HdrEnabled; }
+        // Post controls (read by the resolve pass; editable from the inspector).
+        float tonemapExposure = 1.0f;
+        int   tonemapMode = 1; // 0 None(linear) · 1 ACES · 2 Reinhard · 3 Filmic(Hejl)
         void BeginStream(Camera &camera);
         void EndStream();
         // Orthographic 2D pass for HUD / sprites. Coordinates are in pixels with
@@ -49,7 +57,9 @@ namespace KDot
         // Upload scene lighting (point lights are culled to the nearest few,
         // capped by QualitySettings). Call once per frame inside BeginStream.
         void SetLights(const LightManager &lights, const glm::vec3 &cameraPos);
-        GLuint GetFrameBufferTexture() { return m_Texture; }
+        // The editor displays the tonemapped LDR result (falls back to the raw
+        // scene texture if the tonemap program failed to build).
+        GLuint GetFrameBufferTexture() { return m_TonemapProgram ? m_ResolveTexture : m_Texture; }
         void LoadTexture(const char *path);
         // Draw an arbitrary indexed mesh (e.g. a terrain chunk) with the active
         // camera. Uploaded immediately and drawn in its own draw call; this is
@@ -128,7 +138,17 @@ namespace KDot
         GLuint m_VertexArray;
         GLuint m_VertexBuffer;
         GLuint m_RenderBuffer;
-        GLuint m_Texture;
+        GLuint m_Texture; // scene colour attachment (HDR RGBA16F when supported)
+        // HDR -> LDR tonemap resolve.
+        GLuint m_ResolveFBO = 0;
+        GLuint m_ResolveTexture = 0;
+        GLuint m_TonemapProgram = 0;
+        GLuint m_TonemapVAO = 0;
+        GLint  u_TmHdr = -1;
+        GLint  u_TmExposure = -1;
+        GLint  u_TmMode = -1;
+        bool   m_HdrEnabled = false;
+        void   BuildTonemapResources(int width, int height);
         // Dedicated buffers for DrawMesh (terrain / arbitrary indexed geometry).
         GLuint m_MeshVAO = 0;
         GLuint m_MeshVBO = 0;

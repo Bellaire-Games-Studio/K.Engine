@@ -19,6 +19,99 @@ namespace KDot
             glDeleteBuffers(1, &m_MeshVBO);
             glDeleteBuffers(1, &m_MeshIBO);
         }
+        if (m_TonemapProgram) glDeleteProgram(m_TonemapProgram);
+        if (m_TonemapVAO)     glDeleteVertexArrays(1, &m_TonemapVAO);
+        if (m_ResolveTexture) glDeleteTextures(1, &m_ResolveTexture);
+        if (m_ResolveFBO)     glDeleteFramebuffers(1, &m_ResolveFBO);
+    }
+
+    namespace
+    {
+        // Compile a single shader stage from GLES-3.00 source (adapted to desktop
+        // GL on the fly). Returns 0 on failure.
+        GLuint CompileTonemapStage(GLenum type, const std::string& src)
+        {
+            const std::string adapted = AdaptShaderForPlatform(src);
+            const char* c = adapted.c_str();
+            GLuint sh = glCreateShader(type);
+            glShaderSource(sh, 1, &c, NULL);
+            glCompileShader(sh);
+            GLint ok = 0;
+            glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
+            if (!ok)
+            {
+                char log[1024] = {0};
+                glGetShaderInfoLog(sh, sizeof(log), NULL, log);
+                std::cout << "Tonemap shader compile error: " << log << std::endl;
+                glDeleteShader(sh);
+                return 0;
+            }
+            return sh;
+        }
+
+        GLuint BuildStandaloneProgram(const char* vs, const char* fs)
+        {
+            GLuint v = CompileTonemapStage(GL_VERTEX_SHADER, vs);
+            GLuint f = CompileTonemapStage(GL_FRAGMENT_SHADER, fs);
+            if (!v || !f)
+            {
+                if (v) glDeleteShader(v);
+                if (f) glDeleteShader(f);
+                return 0;
+            }
+            GLuint p = glCreateProgram();
+            glAttachShader(p, v);
+            glAttachShader(p, f);
+            glLinkProgram(p);
+            GLint linked = 0;
+            glGetProgramiv(p, GL_LINK_STATUS, &linked);
+            glDeleteShader(v);
+            glDeleteShader(f);
+            if (!linked)
+            {
+                char log[1024] = {0};
+                glGetProgramInfoLog(p, sizeof(log), NULL, log);
+                std::cout << "Tonemap program link error: " << log << std::endl;
+                glDeleteProgram(p);
+                return 0;
+            }
+            return p;
+        }
+
+        // Fullscreen triangle generated from gl_VertexID (no vertex buffer needed).
+        const char* kTonemapVert =
+            "#version 300 es\n"
+            "precision highp float;\n"
+            "out vec2 vUV;\n"
+            "void main(){\n"
+            "    float x = float((gl_VertexID << 1) & 2);\n"
+            "    float y = float(gl_VertexID & 2);\n"
+            "    vUV = vec2(x, y);\n"
+            "    gl_Position = vec4(vUV * 2.0 - 1.0, 0.0, 1.0);\n"
+            "}\n";
+
+        const char* kTonemapFrag =
+            "#version 300 es\n"
+            "precision highp float;\n"
+            "in vec2 vUV;\n"
+            "out vec4 fragColor;\n"
+            "uniform sampler2D uHdr;\n"
+            "uniform float uExposure;\n"
+            "uniform int uMode;\n"
+            "vec3 aces(vec3 x){ float a=2.51,b=0.03,c=2.43,d=0.59,e=0.14;\n"
+            "    return clamp((x*(a*x+b))/(x*(c*x+d)+e),0.0,1.0); }\n"
+            "vec3 reinhard(vec3 x){ return x/(1.0+x); }\n"
+            "vec3 hejl(vec3 x){ vec3 X=max(vec3(0.0),x-0.004);\n"
+            "    return (X*(6.2*X+0.5))/(X*(6.2*X+1.7)+0.06); }\n"
+            "void main(){\n"
+            "    vec3 hdr = texture(uHdr, vUV).rgb * uExposure;\n"
+            "    vec3 c;\n"
+            "    if (uMode == 0) { fragColor = vec4(hdr, 1.0); return; }\n"   // linear passthrough
+            "    else if (uMode == 2) c = pow(reinhard(hdr), vec3(1.0/2.2));\n"
+            "    else if (uMode == 3) c = hejl(hdr);\n"                       // already sRGB-encoded
+            "    else c = pow(aces(hdr), vec3(1.0/2.2));\n"
+            "    fragColor = vec4(c, 1.0);\n"
+            "}\n";
     }
     bool Renderer::InitShader(const char **ShaderSource, GLenum type)
     {
@@ -550,31 +643,105 @@ namespace KDot
     }
     void Renderer::GenerateFrameBuffer()
     {
-        glViewport(0, 0, 2560, 1440);
+        const int W = 2560, H = 1440;
+        glViewport(0, 0, W, H);
+
+#if defined(KE_PLATFORM_WEB)
+        // WebGL2 needs this extension enabled before a float texture is renderable.
+        emscripten_webgl_enable_extension(emscripten_webgl_get_current_context(), "EXT_color_buffer_float");
+#endif
 
         glGenFramebuffers(1, &m_FrameBuffer);
         glBindFramebuffer(GL_FRAMEBUFFER, m_FrameBuffer);
 
         glGenTextures(1, &m_Texture);
         glBindTexture(GL_TEXTURE_2D, m_Texture);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 2560, 1440, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        // HDR (half-float) colour target so lighting can exceed 1.0 before tonemap.
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, W, H, 0, GL_RGBA, GL_HALF_FLOAT, NULL);
+        // Sampled 1:1 by the resolve pass, so nearest avoids any float-filter dependency.
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_Texture, 0);
 
         glGenRenderbuffers(1, &m_RenderBuffer);
         glBindRenderbuffer(GL_RENDERBUFFER, m_RenderBuffer);
-        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, 2560, 1440);
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, W, H);
         glBindRenderbuffer(GL_RENDERBUFFER, 0);
         glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, m_RenderBuffer);
 
-        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+        m_HdrEnabled = (glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
+        if (!m_HdrEnabled)
         {
-            std::cout << "Framebuffer not complete" << std::endl;
+            // Float target not renderable here: fall back to 8-bit (tonemap still runs).
+            glBindTexture(GL_TEXTURE_2D, m_Texture);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, W, H, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+            if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+                std::cout << "Framebuffer not complete" << std::endl;
         }
+
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glBindTexture(GL_TEXTURE_2D, 0);
         glBindRenderbuffer(GL_RENDERBUFFER, 0);
+
+        BuildTonemapResources(W, H);
+    }
+
+    // Build the LDR resolve target + the fullscreen tonemap program.
+    void Renderer::BuildTonemapResources(int width, int height)
+    {
+        glGenFramebuffers(1, &m_ResolveFBO);
+        glBindFramebuffer(GL_FRAMEBUFFER, m_ResolveFBO);
+
+        glGenTextures(1, &m_ResolveTexture);
+        glBindTexture(GL_TEXTURE_2D, m_ResolveTexture);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR); // ImGui scales this one
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_ResolveTexture, 0);
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+            std::cout << "Resolve framebuffer not complete" << std::endl;
+
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+
+        m_TonemapProgram = BuildStandaloneProgram(kTonemapVert, kTonemapFrag);
+        if (m_TonemapProgram)
+        {
+            u_TmHdr      = glGetUniformLocation(m_TonemapProgram, "uHdr");
+            u_TmExposure = glGetUniformLocation(m_TonemapProgram, "uExposure");
+            u_TmMode     = glGetUniformLocation(m_TonemapProgram, "uMode");
+        }
+        glGenVertexArrays(1, &m_TonemapVAO); // empty VAO; positions come from gl_VertexID
+    }
+
+    void Renderer::ResolveToneMap()
+    {
+        if (!m_TonemapProgram || !m_ResolveFBO)
+            return; // fall back to displaying the raw scene texture
+
+        glBindFramebuffer(GL_FRAMEBUFFER, m_ResolveFBO);
+        glViewport(0, 0, 2560, 1440);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_BLEND);
+
+        glUseProgram(m_TonemapProgram);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, m_Texture);
+        if (u_TmHdr >= 0)      glUniform1i(u_TmHdr, 0);
+        if (u_TmExposure >= 0) glUniform1f(u_TmExposure, tonemapExposure);
+        if (u_TmMode >= 0)     glUniform1i(u_TmMode, tonemapMode);
+
+        glBindVertexArray(m_TonemapVAO);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+        glBindVertexArray(0);
+
+        glBindTexture(GL_TEXTURE_2D, 0);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glEnable(GL_DEPTH_TEST);
     }
     void Renderer::BindFrameBuffer()
     {

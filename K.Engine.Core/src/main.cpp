@@ -162,7 +162,7 @@ namespace KDot
         //  manipulation again.
         enum class Tool { Select, Move, Rotate, Scale,
                           SculptRaise, SculptLower, SculptFlatten, SculptSmooth };
-        enum class Sel  { None, Entity, Sun, Fog, Terrain, Grass };
+        enum class Sel  { None, Entity, Sun, Fog, Terrain, Grass, Post };
         enum class PlayState { Editing, Playing, Paused };
 
         static bool IsTransformTool(Tool t) { return t == Tool::Move || t == Tool::Rotate || t == Tool::Scale; }
@@ -839,6 +839,11 @@ namespace KDot
             DrawHUD();
 
             m_Renderer.UnbindFrameBuffer();
+
+            // Map the HDR scene down to the 8-bit texture the viewport shows
+            // (exposure + tonemap operator + sRGB). The HUD is included so the
+            // crosshair tonemaps with the scene; "None" reproduces the old look.
+            m_Renderer.ResolveToneMap();
         }
 
         // Draw all renderable world items + a transform gizmo on the selection.
@@ -1079,6 +1084,7 @@ namespace KDot
             if (ImGui::Selectable("Sky & Fog", m_Sel == Sel::Fog))             m_Sel = Sel::Fog;
             if (ImGui::Selectable("Terrain", m_Sel == Sel::Terrain))           m_Sel = Sel::Terrain;
             if (ImGui::Selectable("Grass", m_Sel == Sel::Grass))               m_Sel = Sel::Grass;
+            if (ImGui::Selectable("Rendering (HDR / Tonemap)", m_Sel == Sel::Post)) m_Sel = Sel::Post;
 
             ImGui::Separator();
             ImGui::TextDisabled("ENTITIES");
@@ -1145,6 +1151,7 @@ namespace KDot
                 case Sel::Fog:     DrawFogProps();    break;
                 case Sel::Terrain: DrawTerrainProps(); break;
                 case Sel::Grass:   DrawGrassProps();  break;
+                case Sel::Post:    DrawPostProps();   break;
                 case Sel::Entity:
                     if (m_Registry.Valid(m_SelEntity))
                         DrawEntityProps(m_SelEntity);
@@ -1193,6 +1200,20 @@ namespace KDot
             ImGui::SliderFloat("Radius", &m_BrushRadius, 4.0f, 100.0f, "%.0f");
             ImGui::SliderFloat("Strength", &m_BrushStrength, 1.0f, 60.0f, "%.0f");
             ImGui::TextDisabled("Pick Raise / Lower / Flatten / Smooth on the toolbar, then left-click-drag.");
+        }
+
+        void DrawPostProps()
+        {
+            ImGui::TextUnformatted("HDR / Tonemapping");
+            ImGui::Separator();
+            const char* modes[] = {"None (linear)", "ACES (filmic)", "Reinhard", "Filmic (Hejl)"};
+            ImGui::Combo("Operator", &m_Renderer.tonemapMode, modes, IM_ARRAYSIZE(modes));
+            ImGui::SliderFloat("Exposure", &m_Renderer.tonemapExposure, 0.1f, 4.0f, "%.2f");
+            ImGui::Separator();
+            ImGui::TextDisabled("Scene buffer: %s", m_Renderer.HdrEnabled() ? "RGBA16F (HDR)"
+                                                                            : "RGBA8 (float unsupported)");
+            ImGui::TextWrapped("The scene renders to a float buffer; this pass applies exposure, the "
+                               "chosen curve, and sRGB. Pick \"None\" to compare against the raw look.");
         }
 
         void DrawGrassProps()
