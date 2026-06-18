@@ -19,6 +19,10 @@ The build folder holds a current build of the repository.
 - [X] GPU-instanced grass (wind-animated, density from the fidelity dial)
 - [X] Physics (rigidbody, AABB/sphere, raycasts, terrain collision)
 - [X] Entity Component System
+- [X] Scene editor: World Explorer (hierarchy) + Properties (per-component) inspector
+- [X] Play / Pause / Stop (physics + scripts frozen while editing; non-destructive)
+- [X] Scene save / load (`.kscene` text format)
+- [X] C++ scripting (`ScriptBehavior` behaviours, native + web)
 - [X] Adjustable fidelity / LOD ("0.65" dial)
 - [ ] Audio
 - [ ] Animation
@@ -36,8 +40,38 @@ The build folder holds a current build of the repository.
 | `K.Engine.Graphics` | Batched renderer (quads/cubes), `DrawMesh` for terrain, camera, lights |
 | `K.Engine.Physics` | Shapes, collision manifolds, rigidbodies, `PhysicsWorld` (broadphase + solver), raycasts |
 | `K.Engine.Terrain` | `HeightField`, LOD `TerrainChunk` meshing, `Terrain` (noise gen + sculpting) |
-| `K.Engine.Common` | ECS, math, events, `QualitySettings` dial, `Transform`, `MeshData`, noise |
+| `K.Engine.Common` | ECS, math, events, `QualitySettings` dial, `Transform`, scene components, noise |
 | `K.Engine.Input` | Keyboard/mouse polling, platform window |
+| `K.Engine.Editor` | Scene serializer (`.kscene`) + C++ scripting (`ScriptBehavior`, registry, built-ins) |
+
+## Editor, scenes & scripting
+
+The app is an editor over an ECS world. Every world item is an entity with
+components (`Transform`, `Prop`, `LightSource`, `Rigidbody`, `Collider`,
+`Script`, ...); the **Explorer** lists them and the **Properties** panel edits
+them. **Play** snapshots the world and runs physics + scripts; **Stop** restores
+the snapshot, so editing is always non-destructive. **File → Save/Open Scene**
+serializes the world (and environment) to a `.kscene` text file.
+
+Game logic lives in C++ behaviours — *engine for the game, not games for the
+engine*. A behaviour derives from `KDot::ScriptBehavior`, uses the `KDot`
+namespace, and is registered by name; attach it via a `Script` component. Because
+behaviours compile into the binary, the same code runs on native **and** web
+(no separate scripting VM):
+
+```cpp
+class Spin : public KDot::ScriptBehavior {
+    void OnUpdate(float dt) override {
+        if (auto* t = GetTransform())
+            t->rotation = glm::angleAxis(glm::radians(90.0f * dt),
+                                         glm::vec3(0, 1, 0)) * t->rotation;
+    }
+};
+KE_REGISTER_SCRIPT(Spin, "Spin"); // now selectable in the Script component
+
+```
+
+Built-ins: `Spin`, `Hover`, `Patrol` (see `K.Engine.Editor/src/Script/BuiltinScripts.cpp`).
 
 ## The fidelity dial
 

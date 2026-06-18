@@ -15,6 +15,8 @@
 #include <Core/SceneComponents.hpp>
 #include <Core/QualitySettings.hpp>
 #include <Core/Picking.hpp>
+#include <Scene/SceneSerializer.hpp>
+#include <Script/ScriptBehavior.hpp>
 #include <gtc/quaternion.hpp>
 #include <algorithm>
 #include <cstring>
@@ -57,6 +59,7 @@ namespace KDot
         // Editor / interaction state
         enum class Tool { Select, Sculpt };
         enum class Sel  { None, Entity, Sun, Fog, Terrain, Grass };
+        enum class PlayState { Editing, Playing, Paused };
 
         Tool        m_Tool = Tool::Select;
         Sel         m_Sel = Sel::None;
@@ -65,6 +68,10 @@ namespace KDot
         bool        m_LeftPrev = false;
         int         m_NextCube = 1;
         int         m_NextLight = 1;
+
+        PlayState   m_Play = PlayState::Editing;
+        std::string m_Snapshot;                 // serialized scene captured on Play
+        std::string m_ScenePath = "scene.kscene";
 
         float m_Fidelity      = 0.65f;
         float m_BrushRadius   = 28.0f;
@@ -108,6 +115,17 @@ namespace KDot
             SpawnLight(glm::vec3(160.0f, 50.0f, -160.0f), glm::vec3(0.3f, 0.7f, 1.0f), 2.0f, 240.0f, "Cool Light");
 
             SpawnBall();
+
+            // A scripted demo prop: sits still in edit mode, spins on Play.
+            {
+                ecs::Entity c = m_Registry.Create();
+                const glm::vec3 p(40.0f, m_Terrain.HeightAt(40.0f, 40.0f) + 16.0f, 40.0f);
+                m_Registry.Emplace<Transform>(c, p);
+                m_Registry.Emplace<Prop>(c, Prop{glm::vec3(8.0f), glm::vec4(0.3f, 0.8f, 0.5f, 1.0f)});
+                m_Registry.Emplace<KDot::Name>(c, KDot::Name{"Spinner"});
+                m_Registry.Emplace<Script>(c).name = "Spin";
+            }
+
             Select(m_Ball);
         }
 
@@ -234,6 +252,7 @@ namespace KDot
             if (LightSource* l = m_Registry.TryGet<LightSource>(s)) { LightSource c = *l; m_Registry.Emplace<LightSource>(e, c); }
             if (Rigidbody* r = m_Registry.TryGet<Rigidbody>(s)) { Rigidbody c = *r; m_Registry.Emplace<Rigidbody>(e, c); }
             if (Collider* col = m_Registry.TryGet<Collider>(s)) { Collider c = *col; m_Registry.Emplace<Collider>(e, c); }
+            if (Script* sc = m_Registry.TryGet<Script>(s))      { m_Registry.Emplace<Script>(e).name = sc->name; } // name only
 
             std::string base = m_Registry.TryGet<KDot::Name>(s) ? m_Registry.TryGet<KDot::Name>(s)->value : "Entity";
             m_Registry.Emplace<KDot::Name>(e, KDot::Name{base + " copy"});
@@ -267,6 +286,103 @@ namespace KDot
             m_Lights.points.clear();
             m_Registry.View<Transform, LightSource>([&](ecs::Entity, Transform& t, LightSource& ls) {
                 m_Lights.points.push_back({t.position, ls.color, ls.intensity, ls.radius});
+            });
+        }
+
+        // ---- Scene environment <-> serializer -------------------------------
+        SceneEnv CaptureEnv() const
+        {
+            SceneEnv e;
+            e.sunDir = m_Lights.sun.direction;
+            e.sunColor = m_Lights.sun.color;
+            e.sunIntensity = m_Lights.sun.intensity;
+            e.ambientColor = m_Lights.ambient.color;
+            e.ambientIntensity = m_Lights.ambient.intensity;
+            e.fogColor = m_Lights.fogColor;
+            e.fogDensity = m_Lights.fogDensity;
+            e.terrainSeed = m_Seed;
+            e.grassShow = m_ShowGrass;
+            e.grassDistance = m_Grass.maxDistance;
+            return e;
+        }
+
+        void ApplyEnv(const SceneEnv& e)
+        {
+            m_Lights.sun.direction = glm::normalize(e.sunDir);
+            m_Lights.sun.color = e.sunColor;
+            m_Lights.sun.intensity = e.sunIntensity;
+            m_Lights.ambient.color = e.ambientColor;
+            m_Lights.ambient.intensity = e.ambientIntensity;
+            m_Lights.fogColor = e.fogColor;
+            m_Lights.fogDensity = e.fogDensity;
+            m_Seed = e.terrainSeed;
+            m_ShowGrass = e.grassShow;
+            m_Grass.maxDistance = e.grassDistance;
+        }
+
+        // Re-locate the physics ball after the registry was rebuilt (load/stop).
+        void RefindBall()
+        {
+            m_Ball = ecs::kNull;
+            m_Registry.View<KDot::Name>([&](ecs::Entity e, KDot::Name& n) {
+                if (n.value == "Physics Ball")
+                    m_Ball = e;
+            });
+        }
+
+        void SaveScene() { SceneSerializer::Save(m_ScenePath, m_Registry, CaptureEnv()); }
+
+        void LoadScene()
+        {
+            SceneEnv env;
+            if (!SceneSerializer::Load(m_ScenePath, m_Registry, env))
+                return;
+            ApplyEnv(env);
+            RegenerateTerrain(); // rebuild terrain to the loaded seed
+            RefindBall();
+            m_Sel = Sel::None;
+            m_SelEntity = ecs::kNull;
+        }
+
+        // ---- Play mode ------------------------------------------------------
+        // Play snapshots the world; Stop restores it. Physics + scripts only run
+        // while Playing, so the editor stays a frozen, editable scene.
+        void StartPlay()
+        {
+            m_Snapshot = SceneSerializer::SaveToString(m_Registry, CaptureEnv());
+            m_Play = PlayState::Playing;
+        }
+
+        void StopPlay()
+        {
+            SceneEnv env;
+            if (SceneSerializer::LoadFromString(m_Snapshot, m_Registry, env))
+            {
+                ApplyEnv(env);
+                RefindBall();
+            }
+            m_Sel = Sel::None;
+            m_SelEntity = ecs::kNull;
+            m_Play = PlayState::Editing;
+        }
+
+        // Instantiate + tick every Script behaviour for one simulated frame.
+        void UpdateScripts(float dt)
+        {
+            m_Registry.View<Script>([&](ecs::Entity e, Script& s) {
+                if (!s.instance && !s.name.empty())
+                {
+                    s.instance = ScriptRegistry::Get().Create(s.name);
+                    if (s.instance)
+                        s.instance->Attach(&m_Registry, e);
+                }
+                if (s.instance && !s.started)
+                {
+                    s.instance->OnStart();
+                    s.started = true;
+                }
+                if (s.instance)
+                    s.instance->OnUpdate(dt);
             });
         }
 
@@ -339,8 +455,14 @@ namespace KDot
             }
             m_LeftPrev = leftDown;
 
+            // Physics + scripts only advance while Playing; the editor is frozen.
+            const bool simulate = (m_Play == PlayState::Playing);
             m_Terrain.Update(m_Camera.m_Position);
-            m_Physics.Step(m_Registry, dt);
+            if (simulate)
+            {
+                UpdateScripts(dt);
+                m_Physics.Step(m_Registry, dt);
+            }
             SyncLights();
 
             // --- Render the scene into the offscreen framebuffer ---
@@ -483,9 +605,8 @@ namespace KDot
             {
                 if (ImGui::BeginMenu("File"))
                 {
-                    if (ImGui::MenuItem("Open..", "Ctrl+O")) {}
-                    if (ImGui::MenuItem("New Project", "Ctrl+N")) {}
-                    if (ImGui::MenuItem("Save Project", "Ctrl+S")) {}
+                    if (ImGui::MenuItem("Open Scene", "Ctrl+O")) LoadScene();
+                    if (ImGui::MenuItem("Save Scene", "Ctrl+S")) SaveScene();
                     ImGui::EndMenu();
                 }
                 if (ImGui::BeginMenu("Add"))
@@ -494,6 +615,26 @@ namespace KDot
                     if (ImGui::MenuItem("Light")) SpawnLight();
                     ImGui::EndMenu();
                 }
+
+                // Transport: Play / Pause / Stop (physics + scripts run only here).
+                ImGui::Separator();
+                if (m_Play == PlayState::Editing)
+                {
+                    if (ImGui::Button("> Play"))
+                        StartPlay();
+                }
+                else
+                {
+                    if (ImGui::Button(m_Play == PlayState::Playing ? "|| Pause" : "> Resume"))
+                        m_Play = (m_Play == PlayState::Playing) ? PlayState::Paused : PlayState::Playing;
+                    ImGui::SameLine();
+                    if (ImGui::Button("[] Stop"))
+                        StopPlay();
+                }
+                ImGui::SameLine();
+                ImGui::TextDisabled(m_Play == PlayState::Editing    ? "EDIT"
+                                    : m_Play == PlayState::Playing  ? "PLAYING"
+                                                                    : "PAUSED");
                 ImGui::EndMenuBar();
             }
 
@@ -667,7 +808,7 @@ namespace KDot
         }
 
         // Component-by-component editor for a single entity.
-        enum class Rem { None, Prop, Light, Rb, Col };
+        enum class Rem { None, Prop, Light, Rb, Col, Scr };
 
         void DrawEntityProps(ecs::Entity e)
         {
@@ -758,12 +899,37 @@ namespace KDot
                 }
             }
 
+            if (Script* sc = m_Registry.TryGet<Script>(e))
+            {
+                if (ImGui::CollapsingHeader("Script", ImGuiTreeNodeFlags_DefaultOpen))
+                {
+                    const std::string current = sc->name.empty() ? "<none>" : sc->name;
+                    if (ImGui::BeginCombo("Behaviour", current.c_str()))
+                    {
+                        for (const std::string& nm : ScriptRegistry::Get().Names())
+                        {
+                            if (ImGui::Selectable(nm.c_str(), nm == sc->name))
+                            {
+                                sc->name = nm;
+                                sc->instance.reset(); // rebind on next play
+                                sc->started = false;
+                            }
+                        }
+                        ImGui::EndCombo();
+                    }
+                    ImGui::TextDisabled("%s", sc->instance ? "running"
+                                              : (m_Play == PlayState::Editing ? "idle (press Play)" : "not started"));
+                    if (ImGui::SmallButton("Remove Script")) toRemove = Rem::Scr;
+                }
+            }
+
             switch (toRemove)
             {
                 case Rem::Prop:  m_Registry.Remove<Prop>(e); break;
                 case Rem::Light: m_Registry.Remove<LightSource>(e); break;
                 case Rem::Rb:    m_Registry.Remove<Rigidbody>(e); break;
                 case Rem::Col:   m_Registry.Remove<Collider>(e); break;
+                case Rem::Scr:   m_Registry.Remove<Script>(e); break;
                 case Rem::None:  break;
             }
 
@@ -772,6 +938,7 @@ namespace KDot
             if (!m_Registry.Has<Prop>(e))        { if (ImGui::Button("Prop"))      m_Registry.Emplace<Prop>(e); ImGui::SameLine(); }
             if (!m_Registry.Has<LightSource>(e)) { if (ImGui::Button("Light"))     m_Registry.Emplace<LightSource>(e); ImGui::SameLine(); }
             if (!m_Registry.Has<Rigidbody>(e))   { if (ImGui::Button("Rigidbody")) m_Registry.Emplace<Rigidbody>(e); ImGui::SameLine(); }
+            if (!m_Registry.Has<Script>(e))      { if (ImGui::Button("Script"))    m_Registry.Emplace<Script>(e); ImGui::SameLine(); }
             if (!m_Registry.Has<Collider>(e))    { if (ImGui::Button("Collider"))  m_Registry.Emplace<Collider>(e, Collider::MakeBox(glm::vec3(3.0f))); }
             ImGui::NewLine();
 
