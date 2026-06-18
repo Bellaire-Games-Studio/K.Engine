@@ -1,9 +1,7 @@
 # K.Engine
 <img width="1918" height="922" alt="image" src="https://github.com/user-attachments/assets/531c1653-c5fd-4161-ad41-7502e279f715" />
 
-K.Engine is a WIP custom game engine written in C++, targeting a fidelity level
-**roughly two-thirds of the way from Iruna Online to Elden Ring (~0.65)** with a
-single, runtime-adjustable detail dial.
+K.Engine is a WIP custom game engine written in C++.
 
 You can test the current development build [here](https://bellaire-games-studio.github.io/K.Engine/build/bin/K.Engine.html).
 The build folder holds a current build of the repository.
