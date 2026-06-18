@@ -24,6 +24,7 @@
 // -----------------------------------------------------------------------------
 #include <EntitityComponentSystem/ECS.hpp>
 #include <Core/Transform.hpp>
+#include <Core/Hierarchy.hpp>
 #include <functional>
 #include <memory>
 #include <string>
@@ -71,6 +72,10 @@ namespace KDot
 
         Transform* GetTransform() const { return m_Reg ? m_Reg->TryGet<Transform>(m_Self) : nullptr; }
         template <typename T> T* Get() const { return m_Reg ? m_Reg->TryGet<T>(m_Self) : nullptr; }
+
+        // Local Transform is relative to the parent; these resolve global space.
+        glm::vec3 WorldPosition() const { return m_Reg ? KDot::WorldPosition(*m_Reg, m_Self) : glm::vec3(0.0f); }
+        glm::mat4 WorldMatrix()   const { return m_Reg ? KDot::WorldMatrix(*m_Reg, m_Self) : glm::mat4(1.0f); }
 
     private:
         ecs::Registry* m_Reg = nullptr;

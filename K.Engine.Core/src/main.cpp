@@ -13,6 +13,7 @@
 #include <EntitityComponentSystem/ECS.hpp>
 #include <Core/Transform.hpp>
 #include <Core/SceneComponents.hpp>
+#include <Core/Hierarchy.hpp>
 #include <Core/QualitySettings.hpp>
 #include <Core/Picking.hpp>
 #include <Scene/SceneSerializer.hpp>
@@ -20,6 +21,7 @@
 #include <gtc/quaternion.hpp>
 #include <algorithm>
 #include <cstring>
+#include <functional>
 #include <string>
 #include <vector>
 
@@ -140,6 +142,24 @@ namespace KDot
                 m_Registry.Emplace<Prop>(c, Prop{glm::vec3(8.0f), glm::vec4(0.3f, 0.8f, 0.5f, 1.0f)});
                 m_Registry.Emplace<KDot::Name>(c, KDot::Name{"Spinner"});
                 m_Registry.Emplace<Script>(c).name = "Spin";
+            }
+
+            // Parent/child demo: a barrel parented to a spinning turret base. On
+            // Play the base spins (Spin script) and the barrel orbits with it,
+            // because its Transform is relative to the parent.
+            {
+                ecs::Entity base = m_Registry.Create();
+                const glm::vec3 bp(-60.0f, m_Terrain.HeightAt(-60.0f, -60.0f) + 8.0f, -60.0f);
+                m_Registry.Emplace<Transform>(base, bp);
+                m_Registry.Emplace<Prop>(base, Prop{glm::vec3(10.0f, 4.0f, 10.0f), glm::vec4(0.5f, 0.5f, 0.6f, 1.0f)});
+                m_Registry.Emplace<KDot::Name>(base, KDot::Name{"Turret"});
+                m_Registry.Emplace<Script>(base).name = "Spin";
+
+                ecs::Entity barrel = m_Registry.Create();
+                m_Registry.Emplace<Transform>(barrel, glm::vec3(0.0f, 3.0f, 9.0f)); // local to base
+                m_Registry.Emplace<Prop>(barrel, Prop{glm::vec3(2.0f, 2.0f, 12.0f), glm::vec4(0.85f, 0.3f, 0.2f, 1.0f)});
+                m_Registry.Emplace<KDot::Name>(barrel, KDot::Name{"Barrel"});
+                m_Registry.Emplace<Parent>(barrel).value = base;
             }
 
             Select(m_Ball);
@@ -264,6 +284,7 @@ namespace KDot
                 nt.position += glm::vec3(8.0f, 0.0f, 8.0f);
                 m_Registry.Emplace<Transform>(e, nt);
             }
+            if (Parent* pr = m_Registry.TryGet<Parent>(s)) { ecs::Entity pv = pr->value; m_Registry.Emplace<Parent>(e).value = pv; }
             if (Prop* p = m_Registry.TryGet<Prop>(s))        { Prop c = *p;        m_Registry.Emplace<Prop>(e, c); }
             if (LightSource* l = m_Registry.TryGet<LightSource>(s)) { LightSource c = *l; m_Registry.Emplace<LightSource>(e, c); }
             if (Rigidbody* r = m_Registry.TryGet<Rigidbody>(s)) { Rigidbody c = *r; m_Registry.Emplace<Rigidbody>(e, c); }
@@ -315,8 +336,8 @@ namespace KDot
         void SyncLights()
         {
             m_Lights.points.clear();
-            m_Registry.View<Transform, LightSource>([&](ecs::Entity, Transform& t, LightSource& ls) {
-                m_Lights.points.push_back({t.position, ls.color, ls.intensity, ls.radius});
+            m_Registry.View<Transform, LightSource>([&](ecs::Entity e, Transform&, LightSource& ls) {
+                m_Lights.points.push_back({WorldPosition(m_Registry, e), ls.color, ls.intensity, ls.radius});
             });
         }
 
@@ -545,21 +566,23 @@ namespace KDot
         // Draw all renderable world items + a transform gizmo on the selection.
         void DrawSceneItems()
         {
-            m_Registry.View<Transform, Prop>([&](ecs::Entity, Transform& t, Prop& p) {
-                const float yaw = glm::degrees(glm::eulerAngles(t.rotation).y);
-                m_Renderer.DrawCube(t.position, p.size, p.color, yaw);
+            // Props render at their *world* transform (Transform composed up the
+            // parent chain), so parented parts move with their parent.
+            m_Registry.View<Transform, Prop>([&](ecs::Entity e, Transform&, Prop& p) {
+                const glm::mat4 world = WorldMatrix(m_Registry, e) * glm::scale(glm::mat4(1.0f), p.size);
+                m_Renderer.DrawCube(world, p.color);
             });
 
             // Small emissive markers so lights are visible / locatable in the scene.
-            m_Registry.View<Transform, LightSource>([&](ecs::Entity, Transform& t, LightSource& ls) {
-                m_Renderer.DrawCube(t.position, glm::vec3(3.0f), glm::vec4(ls.color, 1.0f), 0.0f);
+            m_Registry.View<Transform, LightSource>([&](ecs::Entity e, Transform&, LightSource& ls) {
+                m_Renderer.DrawCube(WorldPosition(m_Registry, e), glm::vec3(3.0f), glm::vec4(ls.color, 1.0f), 0.0f);
             });
 
             if (m_Sel == Sel::Entity && m_Registry.Valid(m_SelEntity))
             {
-                if (Transform* t = m_Registry.TryGet<Transform>(m_SelEntity))
+                if (m_Registry.TryGet<Transform>(m_SelEntity))
                 {
-                    const glm::vec3 o = t->position;
+                    const glm::vec3 o = WorldPosition(m_Registry, m_SelEntity);
                     const float L = 16.0f, w = 0.8f;
                     m_Renderer.DrawCube(o + glm::vec3(L * 0.5f, 0, 0), glm::vec3(L, w, w), glm::vec4(1.0f, 0.25f, 0.25f, 1.0f), 0.0f);
                     m_Renderer.DrawCube(o + glm::vec3(0, L * 0.5f, 0), glm::vec3(w, L, w), glm::vec4(0.25f, 1.0f, 0.25f, 1.0f), 0.0f);
@@ -759,28 +782,47 @@ namespace KDot
             ImGui::SameLine();
             ImGui::TextDisabled("(%zu)", m_Registry.AliveCount());
 
-            // Collect named entities (don't add/destroy while iterating the pool).
-            struct Row { ecs::Entity e; std::string label; };
-            std::vector<Row> rows;
-            m_Registry.View<KDot::Name>([&](ecs::Entity e, KDot::Name& n) {
+            // Build the parent -> children adjacency (roots = no valid parent),
+            // then draw the hierarchy as a tree.
+            std::vector<ecs::Entity> roots;
+            std::unordered_map<ecs::Entity, std::vector<ecs::Entity>> children;
+            m_Registry.View<KDot::Name>([&](ecs::Entity e, KDot::Name&) {
+                Parent* p = m_Registry.TryGet<Parent>(e);
+                if (p && p->value != ecs::kNull && m_Registry.Valid(p->value))
+                    children[p->value].push_back(e);
+                else
+                    roots.push_back(e);
+            });
+            auto byIndex = [](ecs::Entity a, ecs::Entity b) { return ecs::IndexOf(a) < ecs::IndexOf(b); };
+            std::sort(roots.begin(), roots.end(), byIndex);
+            for (auto& kv : children) std::sort(kv.second.begin(), kv.second.end(), byIndex);
+
+            ImGui::BeginChild("entities", ImVec2(0, 0), true);
+            std::function<void(ecs::Entity)> drawNode = [&](ecs::Entity e) {
+                KDot::Name* n = m_Registry.TryGet<KDot::Name>(e);
                 const char* type = m_Registry.Has<LightSource>(e) ? "light"
                                  : m_Registry.Has<Rigidbody>(e)   ? "body"
                                  : m_Registry.Has<Prop>(e)        ? "prop"
                                                                   : "node";
-                rows.push_back({e, n.value + "  [" + type + "]"});
-            });
-            std::sort(rows.begin(), rows.end(),
-                      [](const Row& a, const Row& b) { return ecs::IndexOf(a.e) < ecs::IndexOf(b.e); });
+                const bool hasKids = children.count(e) && !children[e].empty();
+                const std::string label = (n ? n->value : std::string("entity")) + "  [" + type + "]";
 
-            ImGui::BeginChild("entities", ImVec2(0, 0), true);
-            for (const Row& r : rows)
-            {
-                const bool sel = (m_Sel == Sel::Entity && m_SelEntity == r.e);
-                ImGui::PushID((int)r.e);
-                if (ImGui::Selectable(r.label.c_str(), sel))
-                    Select(r.e);
+                ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_OpenOnArrow | ImGuiTreeNodeFlags_SpanAvailWidth | ImGuiTreeNodeFlags_DefaultOpen;
+                if (m_Sel == Sel::Entity && m_SelEntity == e) flags |= ImGuiTreeNodeFlags_Selected;
+                if (!hasKids) flags |= ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
+
+                ImGui::PushID((int)e);
+                const bool open = ImGui::TreeNodeEx(label.c_str(), flags);
+                if (ImGui::IsItemClicked() && !ImGui::IsItemToggledOpen())
+                    Select(e);
+                if (open && hasKids)
+                {
+                    for (ecs::Entity c : children[e]) drawNode(c);
+                    ImGui::TreePop();
+                }
                 ImGui::PopID();
-            }
+            };
+            for (ecs::Entity r : roots) drawNode(r);
             ImGui::EndChild();
 
             ImGui::End();
@@ -875,6 +917,28 @@ namespace KDot
                     n->value = buf;
             }
             ImGui::TextDisabled("entity #%u", ecs::IndexOf(e));
+
+            // Parent selector (re-parenting keeps the entity's world transform).
+            {
+                Parent* pp = m_Registry.TryGet<Parent>(e);
+                const ecs::Entity curParent = pp ? pp->value : ecs::kNull;
+                std::string label = "<none>";
+                if (curParent != ecs::kNull && m_Registry.Valid(curParent))
+                    if (KDot::Name* pn = m_Registry.TryGet<KDot::Name>(curParent))
+                        label = pn->value;
+                if (ImGui::BeginCombo("Parent", label.c_str()))
+                {
+                    if (ImGui::Selectable("<none>", curParent == ecs::kNull))
+                        SetParentKeepWorld(m_Registry, e, ecs::kNull);
+                    m_Registry.View<KDot::Name>([&](ecs::Entity cand, KDot::Name& cn) {
+                        if (cand == e || IsAncestor(m_Registry, e, cand))
+                            return; // skip self / would-be cycle
+                        if (ImGui::Selectable((cn.value + "##" + std::to_string(cand)).c_str(), cand == curParent))
+                            SetParentKeepWorld(m_Registry, e, cand);
+                    });
+                    ImGui::EndCombo();
+                }
+            }
             ImGui::Separator();
 
             Rem toRemove = Rem::None;

@@ -66,17 +66,29 @@ namespace KDot
         o << "grass_distance " << env.grassDistance << '\n';
         o << "end\n";
 
-        // Serialize every named entity, in stable index order.
+        // Serialize every named entity, in stable index order. Parent links are
+        // written as the parent's ordinal in this list (handles aren't stable
+        // across a save/load), and resolved in a second pass on load.
         std::vector<ecs::Entity> ents;
         reg.View<Name>([&](ecs::Entity e, Name&) { ents.push_back(e); });
         std::sort(ents.begin(), ents.end(),
                   [](ecs::Entity a, ecs::Entity b) { return ecs::IndexOf(a) < ecs::IndexOf(b); });
+
+        std::unordered_map<std::uint32_t, int> ordinalOf; // entity -> index in ents
+        for (int i = 0; i < (int)ents.size(); ++i)
+            ordinalOf[ents[i]] = i;
 
         for (ecs::Entity e : ents)
         {
             o << "entity\n";
             if (Name* n = reg.TryGet<Name>(e))
                 o << "name " << n->value << '\n';
+            if (Parent* pr = reg.TryGet<Parent>(e))
+            {
+                auto it = ordinalOf.find(pr->value);
+                if (pr->value != ecs::kNull && it != ordinalOf.end())
+                    o << "parent " << it->second << '\n';
+            }
             if (Transform* t = reg.TryGet<Transform>(e))
             {
                 o << "transform ";
@@ -132,6 +144,8 @@ namespace KDot
 
         ecs::Entity cur = ecs::kNull;
         ParamMap pendingParams; // script params collected within the current entity
+        std::vector<ecs::Entity> created;             // ordinal -> entity
+        std::vector<std::pair<ecs::Entity, int>> pendingParents; // (child, parent ordinal)
 
         while (std::getline(in, line))
         {
@@ -143,6 +157,7 @@ namespace KDot
             if (key == "entity")
             {
                 cur = reg.Create();
+                created.push_back(cur);
                 pendingParams.clear();
             }
             else if (key == "end")
@@ -178,6 +193,12 @@ namespace KDot
                 std::string rest;
                 std::getline(ls, rest);
                 reg.Emplace<Name>(cur, Name{Trim(rest)});
+            }
+            else if (cur != ecs::kNull && key == "parent")
+            {
+                int ord = -1;
+                ls >> ord;
+                pendingParents.push_back({cur, ord});
             }
             else if (cur != ecs::kNull && key == "transform")
             {
@@ -241,6 +262,12 @@ namespace KDot
                 pendingParams[pname] = std::move(vals);
             }
         }
+
+        // Second pass: resolve parent ordinals to the entities we created.
+        for (const auto& pp : pendingParents)
+            if (pp.second >= 0 && pp.second < (int)created.size())
+                reg.Emplace<Parent>(pp.first).value = created[pp.second];
+
         return true;
     }
 

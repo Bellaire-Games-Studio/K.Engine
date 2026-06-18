@@ -159,37 +159,32 @@ namespace KDot
         // Standard TRS: translate * rotate(yaw) * scale, so position and size
         // stay independent (the cube is centred at 'position' and sized by 'size').
         glm::mat4 transform = glm::translate(glm::mat4(1.0f), position) * glm::rotate(glm::mat4(1.0f), glm::radians(angle), {0.0f, 1.0f, 0.0f}) * glm::scale(glm::mat4(1.0f), size);
+        DrawCube(transform, color, textureIndex);
+    }
+
+    void Renderer::DrawCube(const glm::mat4 &transform, const glm::vec4 &color, unsigned int textureIndex)
+    {
         constexpr size_t cubeVertexCount = 36;
         if (m_QuadIndexCount >= MaxIndices)
-        {
-            NextBatch(); // We've reached the maximum number of QuadIndices, flush the buffer and start a new one
-        }
-        for (size_t i = 0; i < cubeVertexCount; i +=3)
-        {
-            glm::vec3 normal = glm::normalize(glm::cross((glm::vec3)(m_CubeVertexPositions[QuadIndices[i + 1]] - m_CubeVertexPositions[QuadIndices[i]]), (glm::vec3)(m_CubeVertexPositions[QuadIndices[i + 2]] - m_CubeVertexPositions[QuadIndices[i]])));
-            m_QuadVertexBufferPtr->position = transform * m_CubeVertexPositions[QuadIndices[i]];
-            m_QuadVertexBufferPtr->color = color;
-            m_QuadVertexBufferPtr->normal = normal;
-            m_QuadVertexBufferPtr->texCoord = m_CubeVertexTexCoords[QuadIndices[i] % 4];
-            m_QuadVertexBufferPtr->texIndex = textureIndex;
-            m_QuadVertexBufferPtr++;
-            m_QuadVertexBufferPtr->position = transform * m_CubeVertexPositions[QuadIndices[i + 1]];
-            m_QuadVertexBufferPtr->color = color;
-            m_QuadVertexBufferPtr->normal = normal;
-            m_QuadVertexBufferPtr->texCoord = m_CubeVertexTexCoords[QuadIndices[i + 1] % 4];
-            m_QuadVertexBufferPtr->texIndex = textureIndex;
-            m_QuadVertexBufferPtr++;
-            m_QuadVertexBufferPtr->position = transform * m_CubeVertexPositions[QuadIndices[i + 2]];
-            m_QuadVertexBufferPtr->color = color;
-            m_QuadVertexBufferPtr->normal = normal;
-            m_QuadVertexBufferPtr->texCoord = m_CubeVertexTexCoords[QuadIndices[i + 2] % 4];
-            m_QuadVertexBufferPtr->texIndex = textureIndex;
+            NextBatch();
 
-            m_QuadVertexBufferPtr++;
-
+        const glm::mat3 normalMat = glm::mat3(transform);
+        for (size_t i = 0; i < cubeVertexCount; i += 3)
+        {
+            glm::vec3 localN = glm::cross((glm::vec3)(m_CubeVertexPositions[QuadIndices[i + 1]] - m_CubeVertexPositions[QuadIndices[i]]), (glm::vec3)(m_CubeVertexPositions[QuadIndices[i + 2]] - m_CubeVertexPositions[QuadIndices[i]]));
+            glm::vec3 normal = glm::normalize(normalMat * localN);
+            for (int k = 0; k < 3; ++k)
+            {
+                m_QuadVertexBufferPtr->position = transform * m_CubeVertexPositions[QuadIndices[i + k]];
+                m_QuadVertexBufferPtr->color = color;
+                m_QuadVertexBufferPtr->normal = normal;
+                m_QuadVertexBufferPtr->texCoord = m_CubeVertexTexCoords[QuadIndices[i + k] % 4];
+                m_QuadVertexBufferPtr->texIndex = textureIndex;
+                m_QuadVertexBufferPtr++;
+            }
         }
         m_QuadIndexCount += 36;
-        QuadCount+= 6;
+        QuadCount += 6;
     }
     void Renderer::InitMeshBuffers()
     {

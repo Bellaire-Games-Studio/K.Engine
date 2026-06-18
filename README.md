@@ -19,10 +19,11 @@ The build folder holds a current build of the repository.
 - [X] GPU-instanced grass (wind-animated, density from the fidelity dial)
 - [X] Physics (rigidbody, AABB/sphere, raycasts, terrain collision)
 - [X] Entity Component System
-- [X] Scene editor: World Explorer (hierarchy) + Properties (per-component) inspector
+- [X] Scene editor: World Explorer (parent/child tree) + Properties (per-component) inspector
+- [X] Parent/child hierarchy (relative transforms; re-parent keeps world position)
 - [X] Play / Pause / Stop (physics + scripts frozen while editing; non-destructive)
 - [X] Scene save / load (`.kscene` text format)
-- [X] C++ scripting (`ScriptBehavior` behaviours, native + web)
+- [X] C++ scripting (`ScriptBehavior` behaviours with authored parameters, native + web)
 - [X] Adjustable fidelity / LOD ("0.65" dial)
 - [ ] Audio
 - [ ] Animation

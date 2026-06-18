@@ -57,6 +57,9 @@ namespace KDot
         // EndStream so the view/projection match the rest of the frame.
         void DrawMesh(const MeshData &mesh);
         void DrawCube(const glm::vec3 &position, const glm::vec3 &size, const glm::vec4 &color, float angle, unsigned int textureIndex = 0);
+        // Draw a unit cube transformed by an arbitrary matrix (hierarchical world
+        // transforms, gizmos). Normals are carried through the matrix.
+        void DrawCube(const glm::mat4 &transform, const glm::vec4 &color, unsigned int textureIndex = 0);
         void DrawQuad(const glm::vec2 &position, const glm::vec2 &size, const glm::vec4 &color, float rotation, const glm::vec2 &center);
         void DrawQuad(const glm::vec3 &position, const glm::vec2 &size, const glm::vec4 &color);
         void DrawQuad(const glm::vec2 &position, const glm::vec2 &size, const glm::vec4 &color);

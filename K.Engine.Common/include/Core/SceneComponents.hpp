@@ -1,9 +1,17 @@
 #pragma once
 #include <string>
 #include <glm.hpp>
+#include <EntitityComponentSystem/ECS.hpp>
 
 namespace KDot
 {
+    // Parent link: this entity's Transform is interpreted relative to the
+    // parent's world transform (see Core/Hierarchy.hpp). Detaching = kNull.
+    struct Parent
+    {
+        ecs::Entity value = ecs::kNull;
+    };
+
     // -------------------------------------------------------------------------
     // Scene components
     //
