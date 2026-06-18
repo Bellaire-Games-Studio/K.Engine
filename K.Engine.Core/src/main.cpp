@@ -209,6 +209,8 @@ namespace KDot
         std::string              m_ScriptStatus;
         std::vector<std::string> m_ScriptSaved; // files written this session
 
+        char m_TexPath[256] = ""; // image path for the Prop texture loader
+
         PlayState   m_Play = PlayState::Editing;
         std::string m_Snapshot;                 // serialized scene captured on Play
         std::string m_ScenePath = "scene.kscene";
@@ -854,7 +856,7 @@ namespace KDot
             // parent chain), so parented parts move with their parent.
             m_Registry.View<Transform, Prop>([&](ecs::Entity e, Transform&, Prop& p) {
                 const glm::mat4 world = WorldMatrix(m_Registry, e) * glm::scale(glm::mat4(1.0f), p.size);
-                m_Renderer.DrawCube(world, p.color);
+                m_Renderer.DrawCube(world, p.color, static_cast<unsigned int>(p.texture));
             });
 
             // Small emissive markers so lights are visible / locatable in the scene.
@@ -1294,6 +1296,26 @@ namespace KDot
                 {
                     ImGui::ColorEdit4("Color", &p->color.x);
                     ImGui::DragFloat3("Size", &p->size.x, 0.1f, 0.01f, 1000.0f);
+
+                    // Texture: load an image file or drop a built-in checkerboard on
+                    // the cube. The colour above tints the sampled texture.
+                    const char* texName = (p->texture > 0) ? m_Renderer.TexturePath(p->texture) : "";
+                    ImGui::Text("Texture: %s", p->texture > 0 ? (texName[0] ? texName : "(slot)") : "none");
+                    ImGui::InputText("Image path", m_TexPath, sizeof(m_TexPath));
+                    if (ImGui::SmallButton("Load file"))
+                    {
+                        const int slot = m_Renderer.LoadTextureFile(m_TexPath);
+                        if (slot > 0) p->texture = slot;
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("Checkerboard"))
+                    {
+                        const int slot = m_Renderer.CreateCheckerTexture();
+                        if (slot > 0) p->texture = slot;
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::SmallButton("No texture")) p->texture = 0;
+
                     if (ImGui::SmallButton("Remove Prop")) toRemove = Rem::Prop;
                 }
             }

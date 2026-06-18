@@ -28,10 +28,13 @@ namespace KDot
     };
 
     // A renderable axis-aligned box prop (drawn via Renderer::DrawCube).
+    // 'texture' is a 1-based slot into the renderer's loaded textures (0 = none,
+    // just the flat colour); the colour still tints the sampled texture.
     struct Prop
     {
         glm::vec3 size{4.0f};
         glm::vec4 color{0.80f, 0.80f, 0.85f, 1.0f};
+        int       texture = 0;
     };
 
     // A point-light emitter. Its world position comes from the entity Transform;

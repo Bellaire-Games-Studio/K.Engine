@@ -66,6 +66,16 @@ namespace KDot
         // scene texture if the tonemap program failed to build).
         GLuint GetFrameBufferTexture() { return m_TonemapProgram ? m_ResolveTexture : m_Texture; }
         void LoadTexture(const char *path);
+        // Load an image file as a sampled texture; returns a 1-based slot to put on
+        // a Prop (0 on failure). CreateCheckerTexture makes a built-in checkerboard
+        // (works with no asset files, e.g. in the browser build).
+        int LoadTextureFile(const char *path);
+        int CreateCheckerTexture();
+        int TextureCount() const { return (int)m_Textures.size(); }
+        const char *TexturePath(int slot) const
+        {
+            return (slot >= 1 && slot <= (int)m_TexturePaths.size()) ? m_TexturePaths[slot - 1].c_str() : "";
+        }
         // Draw an arbitrary indexed mesh (e.g. a terrain chunk) with the active
         // camera. Uploaded immediately and drawn in its own draw call; this is
         // separate from the quad/cube batch above. Call between BeginStream and
@@ -96,6 +106,10 @@ namespace KDot
         void AddVertexBuffer();
         void InitMeshBuffers();
         void ConfigureMeshVertexAttribs(); // MeshVertex attribute layout for a bound VAO/VBO
+        void BindTextures();               // bind loaded Prop textures to units 0..N
+        // Prop textures (1-based slots; bound to texture units for the main shader).
+        std::vector<GLuint>      m_Textures;
+        std::vector<std::string> m_TexturePaths;
         void ApplyFrameUniforms(); // binds program + sets projection/view/unlit/camera
         int m_CurrentTextureIndex = 0;
         glm::vec4 m_QuadVertexPositions[4];

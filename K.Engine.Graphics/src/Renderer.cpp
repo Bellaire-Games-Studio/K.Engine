@@ -38,6 +38,8 @@ namespace KDot
             if (kv.second.vbo) glDeleteBuffers(1, &kv.second.vbo);
             if (kv.second.ibo) glDeleteBuffers(1, &kv.second.ibo);
         }
+        for (GLuint t : m_Textures)
+            glDeleteTextures(1, &t);
     }
 
     namespace
@@ -520,10 +522,13 @@ namespace KDot
             std::cout << "Invalid shader program: " << log << std::endl;
             return false;
         }
-        for (int i = 1; i < 17; i++) {
+        // Bind sampler tex0..tex15 to texture units 0..15 (must be done with the
+        // program active). The shader's sampleBase() maps a vertex texIndex of
+        // k (1-based) to sampler tex(k-1), which BindTextures() fills from unit k-1.
+        glUseProgram(m_ShaderProgram);
+        for (int i = 0; i < 16; i++) {
             std::string name = "tex" + std::to_string(i);
-
-            glUniform1i(glGetUniformLocation(m_ShaderProgram, name.c_str()) , i - 1);
+            glUniform1i(glGetUniformLocation(m_ShaderProgram, name.c_str()), i);
         }
 
          
@@ -661,6 +666,7 @@ namespace KDot
         // Far plane follows the fidelity dial so distant terrain isn't clipped.
         m_ActiveProjection = glm::perspective(glm::radians(cameraZoom), 16.0f / 9.0f, 0.1f,
                                               QualitySettings::Get().renderDistance);
+        BindTextures(); // make Prop textures available on their units this frame
         StartBatch();
     }
     void Renderer::EndStream()
@@ -996,6 +1002,76 @@ namespace KDot
         glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, m_RenderBuffer);
         UnbindFrameBuffer();
         glBindTexture(GL_TEXTURE_2D, 0);
+    }
+
+    void Renderer::BindTextures()
+    {
+        for (std::size_t i = 0; i < m_Textures.size() && i < 16; ++i)
+        {
+            glActiveTexture(GL_TEXTURE0 + (GLenum)i);
+            glBindTexture(GL_TEXTURE_2D, m_Textures[i]);
+        }
+        glActiveTexture(GL_TEXTURE0);
+    }
+
+    int Renderer::LoadTextureFile(const char* path)
+    {
+        if (m_Textures.size() >= 16)
+            return 0;
+        int w = 0, h = 0, n = 0;
+        stbi_set_flip_vertically_on_load(true);
+        unsigned char* data = stbi_load(path, &w, &h, &n, 0);
+        if (!data)
+        {
+            std::cout << "Failed to load texture: " << path << std::endl;
+            return 0;
+        }
+        const GLenum fmt = (n == 1) ? GL_RED : (n == 3) ? GL_RGB : GL_RGBA;
+        GLuint tex = 0;
+        glGenTextures(1, &tex);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, fmt, w, h, 0, fmt, GL_UNSIGNED_BYTE, data);
+        glGenerateMipmap(GL_TEXTURE_2D);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        stbi_image_free(data);
+
+        m_Textures.push_back(tex);
+        m_TexturePaths.push_back(path);
+        return (int)m_Textures.size();
+    }
+
+    int Renderer::CreateCheckerTexture()
+    {
+        if (m_Textures.size() >= 16)
+            return 0;
+        const int S = 64;
+        std::vector<unsigned char> px(static_cast<std::size_t>(S) * S * 4);
+        for (int y = 0; y < S; ++y)
+            for (int x = 0; x < S; ++x)
+            {
+                const bool c = (((x / 8) + (y / 8)) & 1) != 0;
+                const unsigned char v = c ? 230 : 40;
+                const std::size_t i = (static_cast<std::size_t>(y) * S + x) * 4;
+                px[i] = v; px[i + 1] = v; px[i + 2] = v; px[i + 3] = 255;
+            }
+        GLuint tex = 0;
+        glGenTextures(1, &tex);
+        glBindTexture(GL_TEXTURE_2D, tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, S, S, 0, GL_RGBA, GL_UNSIGNED_BYTE, px.data());
+        glGenerateMipmap(GL_TEXTURE_2D);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glBindTexture(GL_TEXTURE_2D, 0);
+
+        m_Textures.push_back(tex);
+        m_TexturePaths.push_back("<checker>");
+        return (int)m_Textures.size();
     }
 
     void Renderer::LoadTexture(const char* path) {
