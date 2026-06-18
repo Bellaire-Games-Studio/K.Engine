@@ -188,6 +188,12 @@ target_include_directories(${OutputExecutable} PRIVATE ${IMGUI} ${glm} ${SOURCE_
 ######################################################################
 if (KE_BACKEND_WEBGPU)
     target_compile_definitions(${OutputExecutable} PRIVATE KE_BACKEND_WEBGPU)
+    # Experimental WebGPU scaffold (RHI/WebGPUDevice). Pulls in Emscripten's
+    # webgpu.h on the web target. NOTE: not a runnable backend yet - the rest of
+    # the renderer + ImGui are still OpenGL (see docs/WEBGPU_PORT.md).
+    if (EMSCRIPTEN)
+        target_link_options(${OutputExecutable} PRIVATE -sUSE_WEBGPU=1)
+    endif()
 endif()
 if (KE_BACKEND_VULKAN)
     target_compile_definitions(${OutputExecutable} PRIVATE KE_BACKEND_VULKAN)

@@ -32,7 +32,7 @@ The build folder holds a current build of the repository.
 - [ ] Animation
 - [X] Online/In-browser (Emscripten / WebGL2)
 - [X] Native desktop (OpenGL 3.3 core via GLFW + GLEW) — Linux build+run verified
-- [ ] WebGPU backend *(planned; RHI seam in place)*
+- [ ] WebGPU backend *(experimental scaffold: `rhi::Device` + WGSL grass behind `KE_BACKEND_WEBGPU`; not runnable yet — see [`docs/WEBGPU_PORT.md`](docs/WEBGPU_PORT.md))*
 - [ ] Vulkan backend *(planned)*
 - [ ] Multithreading
 
@@ -175,9 +175,12 @@ via the `KE_BACKEND_*` CMake options):
 1. ✅ Native desktop OpenGL (window/loop/RHI seam, shader adaptation).
 2. ✅ RHI device abstraction + OpenGL backend (`RHI/GLDevice`); `GrassRenderer`
    ported onto it (buffers + pipeline + std140 uniform buffer, zero direct GL).
-3. **Vulkan** — implement `rhi::Device` for Vulkan; port the remaining renderer.
-   Native high-performance desktop path.
-4. **WebGPU** — implement `rhi::Device` for WebGPU; move the web target onto it.
+3. 🚧 **WebGPU** — experimental `rhi::Device` scaffold (`RHI/WebGPUDevice`,
+   Emscripten `webgpu.h`) + WGSL grass, behind `-DKE_BACKEND_WEBGPU`. Not runnable
+   yet: the main renderer + ImGui are still GL, and a canvas can hold only one GPU
+   API, so it's an all-or-nothing port. Staged plan in [`docs/WEBGPU_PORT.md`](docs/WEBGPU_PORT.md).
+4. **Vulkan** — implement `rhi::Device` for Vulkan; port the remaining renderer.
+   Native high-performance desktop path (reuses the grown RHI from the WebGPU work).
 
 ## Building (web)
 

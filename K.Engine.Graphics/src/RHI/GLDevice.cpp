@@ -1,5 +1,8 @@
 #include <RHI/GLDevice.hpp>
 #include <Core/ShaderUtil.hpp>
+#if defined(KE_BACKEND_WEBGPU)
+#include <RHI/WebGPUDevice.hpp>
+#endif
 #include <iostream>
 #include <fstream>
 #include <iterator>
@@ -219,8 +222,14 @@ namespace KDot
         // ---- Backend factory ---------------------------------------------------
         std::unique_ptr<Device> CreateDevice()
         {
-            // Vulkan/WebGPU backends will be selected here once implemented.
+            // Backend is chosen at build time via the KE_BACKEND_* CMake options
+            // (see RHI/GraphicsAPI.hpp). WebGPU is an experimental scaffold; the
+            // OpenGL backend remains the default and only runnable path today.
+#if defined(KE_BACKEND_WEBGPU)
+            return CreateWebGPUDevice();
+#else
             return std::make_unique<GLDevice>();
+#endif
         }
     }
 }
