@@ -1306,6 +1306,12 @@ namespace KDot
             ImGui::SliderFloat("Threshold", &m_Renderer.bloomThreshold, 0.0f, 4.0f, "%.2f");
             ImGui::SliderFloat("Intensity", &m_Renderer.bloomIntensity, 0.0f, 2.0f, "%.2f");
             ImGui::Separator();
+            ImGui::TextUnformatted("Ambient occlusion (SSAO)");
+            ImGui::Checkbox("SSAO", &m_Renderer.ssaoEnabled);
+            ImGui::SliderFloat("AO radius", &m_Renderer.ssaoRadius, 0.1f, 5.0f, "%.2f");
+            ImGui::SliderFloat("AO bias", &m_Renderer.ssaoBias, 0.0f, 0.2f, "%.3f");
+            ImGui::SliderFloat("AO intensity", &m_Renderer.ssaoIntensity, 0.0f, 2.0f, "%.2f");
+            ImGui::Separator();
             ImGui::TextUnformatted("Sun shadows (cascaded)");
             ImGui::Checkbox("Shadows##sun", &m_Renderer.shadowsEnabled);
             ImGui::SliderFloat("Bias", &m_Renderer.shadowBias, 0.0f, 0.01f, "%.4f");

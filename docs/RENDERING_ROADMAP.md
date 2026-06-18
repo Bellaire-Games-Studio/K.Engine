@@ -83,10 +83,15 @@ letting grass receive/cast shadows.
   cost; needs motion vectors. **WebGL2: yes‑with‑caveats** (works; history ping‑pong
   is fiddly).
 
-### D. Ambient occlusion (SSAO/GTAO)
-Screen‑space AO from the depth buffer adds contact shadows and depth in crevices —
-especially where grass meets terrain. SSAO is cheap; GTAO is the modern,
-better‑grounded variant. **WebGL2: yes.**
+### D. Ambient occlusion (SSAO) — **DONE**
+The scene FBO's depth is now a sampleable texture; a half‑res SSAO pass
+reconstructs view position + normal from it, samples a 16‑tap hemisphere, box‑
+blurs the result, and the tonemap resolve multiplies the HDR colour by the AO
+before tonemapping. Adds contact darkening in crevices and where geometry meets
+the ground. Controls (enable / radius / bias / intensity) under **Rendering
+(HDR / Tonemap)**; fully gated so it's a no‑op when off/unavailable. GTAO is the
+higher‑quality follow‑up; applying AO to the ambient term only (vs the whole
+colour) would be more physically correct once there's a separate ambient buffer.
 
 ### E. PBR + image‑based lighting
 Move surfaces from Blinn‑Phong to metallic/roughness Cook‑Torrance and light the
@@ -126,8 +131,8 @@ tracing** — these are the Vulkan/WebGPU payoff.
 1. ✅ **HDR + ACES tonemapping + sRGB** — done.
 2. ✅ **Cascaded shadow maps** for the sun — done (3 cascades, PCF).
 3. ✅ **Bloom** — done; color grading / LUT still open.
-4. **SSAO/GTAO** — contact shadows, grass‑meets‑ground depth. *(next)*
-5. **PBR + a sky/IBL ambient** — consistent materials and grounded ambient light.
+4. ✅ **SSAO** — done (16‑tap half‑res, depth‑reconstructed normals).
+5. **PBR + a sky/IBL ambient** — consistent materials and grounded ambient light. *(next)*
 
 Everything above is WebGL2‑reachable. The items that genuinely need a new backend
 (GPU‑driven grass culling, compute clustered shading, voxel/RT GI) are exactly the

@@ -32,6 +32,13 @@ namespace KDot
             if (m_BlurTex[i]) glDeleteTextures(1, &m_BlurTex[i]);
             if (m_BlurFBO[i]) glDeleteFramebuffers(1, &m_BlurFBO[i]);
         }
+        if (m_DepthTex)         glDeleteTextures(1, &m_DepthTex);
+        if (m_SsaoProgram)      glDeleteProgram(m_SsaoProgram);
+        if (m_SsaoBlurProgram)  glDeleteProgram(m_SsaoBlurProgram);
+        if (m_SsaoTex)          glDeleteTextures(1, &m_SsaoTex);
+        if (m_SsaoFBO)          glDeleteFramebuffers(1, &m_SsaoFBO);
+        if (m_SsaoBlurTex)      glDeleteTextures(1, &m_SsaoBlurTex);
+        if (m_SsaoBlurFBO)      glDeleteFramebuffers(1, &m_SsaoBlurFBO);
         for (auto &kv : m_MeshCache)
         {
             if (kv.second.vao) glDeleteVertexArrays(1, &kv.second.vao);
@@ -121,8 +128,10 @@ namespace KDot
             "out vec4 fragColor;\n"
             "uniform sampler2D uHdr;\n"
             "uniform sampler2D uBloom;\n"
+            "uniform sampler2D uAo;\n"
             "uniform float uExposure;\n"
             "uniform float uBloomIntensity;\n"
+            "uniform float uAoEnabled;\n"
             "uniform int uMode;\n"
             "vec3 aces(vec3 x){ float a=2.51,b=0.03,c=2.43,d=0.59,e=0.14;\n"
             "    return clamp((x*(a*x+b))/(x*(c*x+d)+e),0.0,1.0); }\n"
@@ -131,6 +140,8 @@ namespace KDot
             "    return (X*(6.2*X+0.5))/(X*(6.2*X+1.7)+0.06); }\n"
             "void main(){\n"
             "    vec3 hdr = texture(uHdr, vUV).rgb;\n"
+            "    float ao = mix(1.0, texture(uAo, vUV).r, uAoEnabled);\n"
+            "    hdr *= ao;\n"                                          // contact darkening
             "    hdr += texture(uBloom, vUV).rgb * uBloomIntensity;\n" // add glow in linear HDR
             "    hdr *= uExposure;\n"
             "    vec3 c;\n"
@@ -196,6 +207,72 @@ namespace KDot
             "uniform mat4 uLightVP;\n"
             "uniform mat4 uModel;\n"
             "void main(){ gl_Position = uLightVP * uModel * vec4(position, 1.0); }\n";
+
+        // Screen-space ambient occlusion: reconstruct view position + normal from
+        // the scene depth, sample a hemisphere, output occlusion in .r.
+        const char* kSsaoFrag =
+            "#version 300 es\n"
+            "precision highp float;\n"
+            "in vec2 vUV;\n"
+            "out vec4 fragColor;\n"
+            "uniform sampler2D uDepth;\n"
+            "uniform mat4 uProj;\n"
+            "uniform mat4 uInvProj;\n"
+            "uniform float uRadius;\n"
+            "uniform float uBias;\n"
+            "uniform float uIntensity;\n"
+            "vec3 viewPos(vec2 uv){\n"
+            "    float d = texture(uDepth, uv).r;\n"
+            "    vec4 c = uInvProj * vec4(uv * 2.0 - 1.0, d * 2.0 - 1.0, 1.0);\n"
+            "    return c.xyz / c.w;\n"
+            "}\n"
+            "float hash(vec2 p){ return fract(sin(dot(p, vec2(41.3, 289.1))) * 43758.5453); }\n"
+            "void main(){\n"
+            "    float d = texture(uDepth, vUV).r;\n"
+            "    if (d >= 1.0) { fragColor = vec4(1.0); return; }\n" // sky: fully lit
+            "    vec3 P = viewPos(vUV);\n"
+            "    vec3 N = normalize(cross(dFdx(P), dFdy(P)));\n"
+            "    if (N.z < 0.0) N = -N;\n"
+            "    float ang = hash(vUV) * 6.2831853;\n"
+            "    vec3 rvec = vec3(cos(ang), sin(ang), 0.0);\n"
+            "    vec3 T = normalize(rvec - N * dot(rvec, N));\n"
+            "    vec3 B = cross(N, T);\n"
+            "    const int K = 16;\n"
+            "    float occ = 0.0;\n"
+            "    for (int i = 0; i < K; ++i){\n"
+            "        float fi = (float(i) + 0.5) / float(K);\n"
+            "        float r = sqrt(fi);\n"
+            "        float th = fi * 6.2831853 * 4.0 + ang;\n"
+            "        vec3 s = vec3(r * cos(th), r * sin(th), 0.25 + 0.75 * fi);\n"
+            "        vec3 dir = T * s.x + B * s.y + N * s.z;\n"
+            "        vec3 sp = P + dir * uRadius;\n"
+            "        vec4 o = uProj * vec4(sp, 1.0);\n"
+            "        o.xyz /= o.w;\n"
+            "        vec2 suv = o.xy * 0.5 + 0.5;\n"
+            "        if (suv.x < 0.0 || suv.x > 1.0 || suv.y < 0.0 || suv.y > 1.0) continue;\n"
+            "        float sceneZ = viewPos(suv).z;\n"
+            "        float rangeCheck = smoothstep(0.0, 1.0, uRadius / max(abs(P.z - sceneZ), 0.0001));\n"
+            "        occ += (sceneZ >= sp.z + uBias ? 1.0 : 0.0) * rangeCheck;\n"
+            "    }\n"
+            "    float ao = 1.0 - (occ / float(K)) * uIntensity;\n"
+            "    fragColor = vec4(clamp(ao, 0.0, 1.0));\n"
+            "}\n";
+
+        // Small box blur to denoise the AO (reads/writes .r replicated to rgb).
+        const char* kSsaoBlurFrag =
+            "#version 300 es\n"
+            "precision highp float;\n"
+            "in vec2 vUV;\n"
+            "out vec4 fragColor;\n"
+            "uniform sampler2D uTex;\n"
+            "uniform vec2 uTexel;\n"
+            "void main(){\n"
+            "    float sum = 0.0;\n"
+            "    for (int x = -2; x <= 2; ++x)\n"
+            "        for (int y = -2; y <= 2; ++y)\n"
+            "            sum += texture(uTex, vUV + vec2(float(x), float(y)) * uTexel).r;\n"
+            "    fragColor = vec4(sum / 25.0);\n"
+            "}\n";
     }
     bool Renderer::InitShader(const char **ShaderSource, GLenum type)
     {
@@ -701,6 +778,7 @@ namespace KDot
         // Far plane follows the fidelity dial so distant terrain isn't clipped.
         m_ActiveProjection = glm::perspective(glm::radians(cameraZoom), 16.0f / 9.0f, 0.1f,
                                               QualitySettings::Get().renderDistance);
+        m_SceneProjection = m_ActiveProjection; // keep the scene perspective for SSAO (Begin2D clobbers m_ActiveProjection)
         BindTextures(); // make Prop textures available on their units this frame
         StartBatch();
     }
@@ -809,11 +887,15 @@ namespace KDot
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_Texture, 0);
 
-        glGenRenderbuffers(1, &m_RenderBuffer);
-        glBindRenderbuffer(GL_RENDERBUFFER, m_RenderBuffer);
-        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, W, H);
-        glBindRenderbuffer(GL_RENDERBUFFER, 0);
-        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, m_RenderBuffer);
+        // Depth as a sampleable texture (SSAO reads it) rather than a renderbuffer.
+        glGenTextures(1, &m_DepthTex);
+        glBindTexture(GL_TEXTURE_2D, m_DepthTex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, W, H, 0, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, NULL);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, m_DepthTex, 0);
 
         m_HdrEnabled = (glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
         if (!m_HdrEnabled)
@@ -830,6 +912,7 @@ namespace KDot
         glBindRenderbuffer(GL_RENDERBUFFER, 0);
 
         BuildTonemapResources(W, H);
+        BuildSsaoResources(W / 2, H / 2); // SSAO runs at half resolution
         InitShadows();
     }
 
@@ -858,8 +941,10 @@ namespace KDot
         {
             u_TmHdr            = glGetUniformLocation(m_TonemapProgram, "uHdr");
             u_TmBloom          = glGetUniformLocation(m_TonemapProgram, "uBloom");
+            u_TmAo             = glGetUniformLocation(m_TonemapProgram, "uAo");
             u_TmExposure       = glGetUniformLocation(m_TonemapProgram, "uExposure");
             u_TmBloomIntensity = glGetUniformLocation(m_TonemapProgram, "uBloomIntensity");
+            u_TmAoEnabled      = glGetUniformLocation(m_TonemapProgram, "uAoEnabled");
             u_TmMode           = glGetUniformLocation(m_TonemapProgram, "uMode");
         }
         glGenVertexArrays(1, &m_TonemapVAO); // empty VAO; positions come from gl_VertexID
@@ -959,14 +1044,99 @@ namespace KDot
         return m_BlurTex[1];
     }
 
+    void Renderer::BuildSsaoResources(int width, int height)
+    {
+        m_SsaoW = width;
+        m_SsaoH = height;
+
+        auto makeTarget = [&](GLuint& fbo, GLuint& tex) {
+            glGenFramebuffers(1, &fbo);
+            glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+            glGenTextures(1, &tex);
+            glBindTexture(GL_TEXTURE_2D, tex);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
+            if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+                std::cout << "SSAO framebuffer not complete" << std::endl;
+        };
+        makeTarget(m_SsaoFBO, m_SsaoTex);
+        makeTarget(m_SsaoBlurFBO, m_SsaoBlurTex);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+
+        m_SsaoProgram = BuildStandaloneProgram(kTonemapVert, kSsaoFrag);
+        if (m_SsaoProgram)
+        {
+            u_SsDepth     = glGetUniformLocation(m_SsaoProgram, "uDepth");
+            u_SsProj      = glGetUniformLocation(m_SsaoProgram, "uProj");
+            u_SsInvProj   = glGetUniformLocation(m_SsaoProgram, "uInvProj");
+            u_SsRadius    = glGetUniformLocation(m_SsaoProgram, "uRadius");
+            u_SsBias      = glGetUniformLocation(m_SsaoProgram, "uBias");
+            u_SsIntensity = glGetUniformLocation(m_SsaoProgram, "uIntensity");
+        }
+        m_SsaoBlurProgram = BuildStandaloneProgram(kTonemapVert, kSsaoBlurFrag);
+        if (m_SsaoBlurProgram)
+        {
+            u_SbTex   = glGetUniformLocation(m_SsaoBlurProgram, "uTex");
+            u_SbTexel = glGetUniformLocation(m_SsaoBlurProgram, "uTexel");
+        }
+    }
+
+    // Compute occlusion from the scene depth, then box-blur it. Returns the
+    // blurred AO texture (or 0 if SSAO is off / unavailable).
+    GLuint Renderer::RenderSSAO()
+    {
+        if (!ssaoEnabled || !m_SsaoProgram || !m_SsaoBlurProgram || !m_TonemapVAO || m_DepthTex == 0)
+            return 0;
+
+        glViewport(0, 0, m_SsaoW, m_SsaoH);
+        glDisable(GL_DEPTH_TEST);
+        glDisable(GL_BLEND);
+        glBindVertexArray(m_TonemapVAO);
+
+        const glm::mat4 invProj = glm::inverse(m_SceneProjection);
+
+        // 1) Occlusion -> m_SsaoTex.
+        glBindFramebuffer(GL_FRAMEBUFFER, m_SsaoFBO);
+        glUseProgram(m_SsaoProgram);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, m_DepthTex);
+        if (u_SsDepth >= 0)     glUniform1i(u_SsDepth, 0);
+        if (u_SsProj >= 0)      glUniformMatrix4fv(u_SsProj, 1, GL_FALSE, &m_SceneProjection[0][0]);
+        if (u_SsInvProj >= 0)   glUniformMatrix4fv(u_SsInvProj, 1, GL_FALSE, &invProj[0][0]);
+        if (u_SsRadius >= 0)    glUniform1f(u_SsRadius, ssaoRadius);
+        if (u_SsBias >= 0)      glUniform1f(u_SsBias, ssaoBias);
+        if (u_SsIntensity >= 0) glUniform1f(u_SsIntensity, ssaoIntensity);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+
+        // 2) Box-blur -> m_SsaoBlurTex.
+        glBindFramebuffer(GL_FRAMEBUFFER, m_SsaoBlurFBO);
+        glUseProgram(m_SsaoBlurProgram);
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, m_SsaoTex);
+        if (u_SbTex >= 0)   glUniform1i(u_SbTex, 0);
+        if (u_SbTexel >= 0) glUniform2f(u_SbTexel, 1.0f / (float)m_SsaoW, 1.0f / (float)m_SsaoH);
+        glDrawArrays(GL_TRIANGLES, 0, 3);
+
+        glBindVertexArray(0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+        return m_SsaoBlurTex;
+    }
+
     void Renderer::ResolveToneMap()
     {
         if (!m_TonemapProgram || !m_ResolveFBO)
             return; // fall back to displaying the raw scene texture
 
-        // Bloom first (writes its own half-res targets), then the final resolve.
+        // Bloom + SSAO first (each writes its own targets), then the final resolve.
         const GLuint bloomTex = RenderBloom();
         const float bloomAmount = (bloomTex != 0) ? bloomIntensity : 0.0f;
+        const GLuint aoTex = RenderSSAO();
+        const float aoEnabled = (aoTex != 0) ? 1.0f : 0.0f;
 
         glBindFramebuffer(GL_FRAMEBUFFER, m_ResolveFBO);
         glViewport(0, 0, 2560, 1440);
@@ -978,16 +1148,22 @@ namespace KDot
         glBindTexture(GL_TEXTURE_2D, m_Texture);
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, bloomTex != 0 ? bloomTex : m_Texture); // valid sampler even when off
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, aoTex != 0 ? aoTex : m_Texture);
         if (u_TmHdr >= 0)            glUniform1i(u_TmHdr, 0);
         if (u_TmBloom >= 0)          glUniform1i(u_TmBloom, 1);
+        if (u_TmAo >= 0)             glUniform1i(u_TmAo, 2);
         if (u_TmExposure >= 0)       glUniform1f(u_TmExposure, tonemapExposure);
         if (u_TmBloomIntensity >= 0) glUniform1f(u_TmBloomIntensity, bloomAmount);
+        if (u_TmAoEnabled >= 0)      glUniform1f(u_TmAoEnabled, aoEnabled);
         if (u_TmMode >= 0)           glUniform1i(u_TmMode, tonemapMode);
 
         glBindVertexArray(m_TonemapVAO);
         glDrawArrays(GL_TRIANGLES, 0, 3);
         glBindVertexArray(0);
 
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, 0);
         glActiveTexture(GL_TEXTURE1);
         glBindTexture(GL_TEXTURE_2D, 0);
         glActiveTexture(GL_TEXTURE0);

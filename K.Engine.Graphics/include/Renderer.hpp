@@ -52,6 +52,11 @@ namespace KDot
         bool  bloomEnabled = true;
         float bloomThreshold = 1.0f; // luminance above which pixels bloom (HDR: >1 = overbright)
         float bloomIntensity = 0.6f;
+        // SSAO (screen-space ambient occlusion / contact shadows).
+        bool  ssaoEnabled = true;
+        float ssaoRadius = 1.5f;    // view-space sampling radius
+        float ssaoBias = 0.03f;     // depth bias to avoid self-occlusion
+        float ssaoIntensity = 1.0f; // 0 = none
 
         // ---- Cascaded shadow maps (sun) ------------------------------------
         // WorldLayer computes the per-cascade light matrices each frame and hands
@@ -180,6 +185,7 @@ namespace KDot
         GLint u_PointIntensity[kMaxShaderPointLights];
         GLint u_PointRadius[kMaxShaderPointLights];
         glm::mat4 m_ActiveProjection = glm::mat4(1.0f);
+        glm::mat4 m_SceneProjection = glm::mat4(1.0f); // perspective from BeginStream (survives Begin2D)
         int       m_ShadeMode = 0;
         glm::vec3 m_CameraWorldPos = glm::vec3(0.0f);
         GLuint m_ShaderProgram;
@@ -188,6 +194,7 @@ namespace KDot
         GLuint m_VertexBuffer;
         GLuint m_RenderBuffer;
         GLuint m_Texture; // scene colour attachment (HDR RGBA16F when supported)
+        GLuint m_DepthTex = 0; // scene depth, as a sampleable texture (for SSAO)
         // HDR -> LDR tonemap resolve.
         GLuint m_ResolveFBO = 0;
         GLuint m_ResolveTexture = 0;
@@ -209,8 +216,19 @@ namespace KDot
         GLuint m_BlurProgram = 0;
         GLint  u_BrScene = -1, u_BrThreshold = -1;
         GLint  u_BlTex = -1, u_BlTexel = -1, u_BlHorizontal = -1;
+        GLint  u_TmAo = -1, u_TmAoEnabled = -1;
         void   BuildBloomResources(int width, int height);
         GLuint RenderBloom(); // returns the texture holding the final blurred bloom
+
+        // SSAO: half-res occlusion from the scene depth texture, then a box blur.
+        int    m_SsaoW = 0, m_SsaoH = 0;
+        GLuint m_SsaoFBO = 0, m_SsaoTex = 0;
+        GLuint m_SsaoBlurFBO = 0, m_SsaoBlurTex = 0;
+        GLuint m_SsaoProgram = 0, m_SsaoBlurProgram = 0;
+        GLint  u_SsDepth = -1, u_SsProj = -1, u_SsInvProj = -1, u_SsRadius = -1, u_SsBias = -1, u_SsIntensity = -1, u_SsTexel = -1;
+        GLint  u_SbTex = -1, u_SbTexel = -1;
+        void   BuildSsaoResources(int width, int height);
+        GLuint RenderSSAO(); // returns the blurred AO texture (or 0 if unavailable/off)
 
         // Shadow atlas (cascades tiled horizontally) + depth-only programs.
         static constexpr int kShadowUnit = 15; // texture unit reserved for the shadow atlas
