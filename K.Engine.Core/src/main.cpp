@@ -297,6 +297,75 @@ namespace KDot
                                     QualitySettings::Get().renderDistance);
         }
 
+        // Fit a light-space ortho box to each slice of the camera frustum so the
+        // sun's shadow map keeps resolution near the camera (classic CSM).
+        Renderer::ShadowData ComputeShadows()
+        {
+            Renderer::ShadowData sd;
+            const int N = std::max(1, std::min(m_Renderer.shadowCascades, 4));
+            sd.count = N;
+
+            const float aspect = kFbW / kFbH;
+            const float tanV = std::tan(glm::radians(m_Camera.getZoom()) * 0.5f);
+            const float tanH = tanV * aspect;
+            const float nearD = 0.5f;
+            const float farD  = m_Renderer.shadowDistance;
+            const float lambda = 0.7f; // blend log vs uniform cascade splits
+
+            const glm::mat4 invView = glm::inverse(m_Camera.GetViewMatrix());
+            const glm::vec3 lightDir = glm::normalize(m_Lights.sun.direction);
+            const glm::vec3 up = (std::abs(lightDir.y) > 0.99f) ? glm::vec3(1, 0, 0) : glm::vec3(0, 1, 0);
+
+            float splits[4];
+            for (int i = 0; i < N; ++i)
+            {
+                const float p = float(i + 1) / float(N);
+                const float logd = nearD * std::pow(farD / nearD, p);
+                const float unid = nearD + (farD - nearD) * p;
+                splits[i] = lambda * logd + (1.0f - lambda) * unid;
+            }
+
+            for (int c = 0; c < N; ++c)
+            {
+                const float nd = (c == 0) ? nearD : splits[c - 1];
+                const float fd = splits[c];
+                sd.splitFar[c] = fd;
+
+                glm::vec3 corners[8];
+                int k = 0;
+                const float ds[2] = {nd, fd};
+                for (int di = 0; di < 2; ++di)
+                    for (int sx = -1; sx <= 1; sx += 2)
+                        for (int sy = -1; sy <= 1; sy += 2)
+                        {
+                            const float d = ds[di];
+                            corners[k++] = glm::vec3(invView * glm::vec4(sx * d * tanH, sy * d * tanV, -d, 1.0f));
+                        }
+
+                glm::vec3 center(0.0f);
+                for (int i = 0; i < 8; ++i) center += corners[i];
+                center *= 0.125f;
+
+                float radius = 0.0f;
+                for (int i = 0; i < 8; ++i) radius = std::max(radius, glm::length(corners[i] - center));
+
+                const glm::vec3 eye = center - lightDir * (radius * 2.0f + 50.0f);
+                const glm::mat4 lightView = glm::lookAt(eye, center, up);
+
+                glm::vec3 mn(1e9f), mx(-1e9f);
+                for (int i = 0; i < 8; ++i)
+                {
+                    const glm::vec3 ls = glm::vec3(lightView * glm::vec4(corners[i], 1.0f));
+                    mn = glm::min(mn, ls);
+                    mx = glm::max(mx, ls);
+                }
+                const float pad = 40.0f; // pull the near plane back to catch off-screen casters
+                const glm::mat4 ortho = glm::ortho(mn.x, mx.x, mn.y, mx.y, -mx.z - pad, -mn.z + pad);
+                sd.lightVP[c] = ortho * lightView;
+            }
+            return sd;
+        }
+
         void RegenerateTerrain()
         {
             const int edge = QualitySettings::Get().terrainChunkEdgeVerts;
@@ -817,6 +886,24 @@ namespace KDot
             }
             SyncLights();
 
+            // --- Sun shadow pass: render scene depth from the sun into the cascade
+            //     atlas (terrain reuses its cached GPU buffers; props as boxes). ---
+            Renderer::ShadowData shadows = ComputeShadows();
+            if (m_Renderer.shadowsEnabled && m_Renderer.ShadowsReady() && shadows.count > 0)
+            {
+                m_Renderer.BeginShadowPass();
+                for (int c = 0; c < shadows.count; ++c)
+                {
+                    m_Renderer.ShadowCascade(c, shadows.lightVP[c]);
+                    m_Renderer.DrawTerrainShadow();
+                    m_Registry.View<Transform, Prop>([&](ecs::Entity e, Transform&, Prop& p) {
+                        const glm::mat4 model = WorldMatrix(m_Registry, e) * glm::scale(glm::mat4(1.0f), p.size);
+                        m_Renderer.DrawCubeShadow(model);
+                    });
+                }
+                m_Renderer.EndShadowPass();
+            }
+
             // --- Render the scene into the offscreen framebuffer ---
             m_Renderer.BindFrameBuffer();
             glViewport(0, 0, (int)kFbW, (int)kFbH);
@@ -826,6 +913,7 @@ namespace KDot
 
             m_Renderer.BeginStream(m_Camera);
             m_Renderer.SetLights(m_Lights, m_Camera.m_Position);
+            m_Renderer.SetShadows(shadows);
 
             std::uint32_t chunkKey = 0;
             for (const TerrainChunk& chunk : m_Terrain.Chunks())
@@ -1217,6 +1305,13 @@ namespace KDot
             ImGui::Checkbox("Enabled", &m_Renderer.bloomEnabled);
             ImGui::SliderFloat("Threshold", &m_Renderer.bloomThreshold, 0.0f, 4.0f, "%.2f");
             ImGui::SliderFloat("Intensity", &m_Renderer.bloomIntensity, 0.0f, 2.0f, "%.2f");
+            ImGui::Separator();
+            ImGui::TextUnformatted("Sun shadows (cascaded)");
+            ImGui::Checkbox("Shadows##sun", &m_Renderer.shadowsEnabled);
+            ImGui::SliderFloat("Bias", &m_Renderer.shadowBias, 0.0f, 0.01f, "%.4f");
+            ImGui::SliderFloat("Distance", &m_Renderer.shadowDistance, 100.0f, 1500.0f, "%.0f");
+            ImGui::TextDisabled("%d cascades · %dpx/cascade%s", m_Renderer.shadowCascades,
+                                m_Renderer.ShadowMapSize(), m_Renderer.ShadowsReady() ? "" : " (unavailable)");
             ImGui::Separator();
             ImGui::TextDisabled("Scene buffer: %s", m_Renderer.HdrEnabled() ? "RGBA16F (HDR)"
                                                                             : "RGBA8 (float unsupported)");

@@ -62,14 +62,21 @@ step: lighting can now exceed 1.0 instead of clipping to flat white.
 *Follow-ups here:* bloom is now cheap to add (bright-pass the HDR buffer before
 the resolve), and auto-exposure / eye-adaptation could drive `tonemapExposure`.
 
-### B. Cascaded shadow maps (sun)
-`QualitySettings` already carries a `shadowMapSize` dial with no pass behind it.
-Add a depth‑only pass from the sun's POV split into 2–4 cascades by view depth,
-sample with PCF. Grounds objects and terrain; by far the biggest "3D" cue after
-tonemapping. Medium cost. **WebGL2: yes** (depth textures + PCF are core in GLES3).
+### B. Cascaded shadow maps (sun) — **DONE**
+A depth‑only pass renders shadow casters from the sun into a horizontally‑tiled
+cascade atlas (3 cascades fit per camera‑frustum slice). Terrain reuses its cached
+GPU buffers; props render as boxes. The main shader picks a cascade by view depth
+and samples with 3×3 PCF, attenuating the sun term. Controls (enable / bias /
+distance) are under **Rendering (HDR / Tonemap)**, sized off the `shadowMapSize`
+dial. The path is fail‑safe — if the atlas or depth programs don't build, the
+scene just renders unshadowed. Bias tuning against a running build is expected.
+
+*Follow‑ups:* texel‑snapping to kill cascade shimmer, normal‑offset bias, and
+letting grass receive/cast shadows.
 
 ### C. Post‑processing stack (bloom → color grade → optional TAA)
-- **Bloom**: bright‑pass + separable blur + add. Cheap, high payoff once HDR exists.
+- **Bloom — DONE**: half‑res bright‑pass + two‑iteration separable blur, added to
+  the HDR colour before the tonemap resolve. Threshold/intensity in the editor.
 - **Color grading / LUT**: art‑directable mood for free.
 - **TAA**: jittered sampling + history reproject — removes shimmer *and* makes
   cheaper SSAO/SSR/volumetrics viable by amortizing samples over frames. Medium
@@ -116,10 +123,10 @@ tracing** — these are the Vulkan/WebGPU payoff.
 ---
 
 ## If I only did five things, in order
-1. **HDR + ACES/AgX tonemapping + sRGB** — transforms the whole image, days of work.
-2. **Cascaded shadow maps** for the sun — wire up the dial that already exists.
-3. **Bloom + color grading** — cheap once HDR is in.
-4. **SSAO/GTAO** — contact shadows, grass‑meets‑ground depth.
+1. ✅ **HDR + ACES tonemapping + sRGB** — done.
+2. ✅ **Cascaded shadow maps** for the sun — done (3 cascades, PCF).
+3. ✅ **Bloom** — done; color grading / LUT still open.
+4. **SSAO/GTAO** — contact shadows, grass‑meets‑ground depth. *(next)*
 5. **PBR + a sky/IBL ambient** — consistent materials and grounded ambient light.
 
 Everything above is WebGL2‑reachable. The items that genuinely need a new backend

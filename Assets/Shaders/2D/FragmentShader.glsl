@@ -9,6 +9,7 @@ in vec3 normalF;
 in vec2 texCoordF;
 flat in uint texIndexF;
 in vec3 fragPos;
+in float vViewDepth;
 
 uniform sampler2D tex0, tex1, tex2, tex3, tex4, tex5, tex6, tex7, tex8, tex9, tex10, tex11, tex12, tex13, tex14, tex15;
 
@@ -33,6 +34,53 @@ uniform float uPointRadius[MAX_POINT_LIGHTS];
 
 uniform vec3  uFogColor;
 uniform float uFogDensity;
+
+// ---- Cascaded shadow maps (sun) --------------------------------------------
+const int MAX_CASCADES = 4;
+uniform int       uShadowCount;          // 0 = shadows disabled (no-op)
+uniform mat4      uShadowVP[MAX_CASCADES];
+uniform float     uShadowSplit[MAX_CASCADES]; // cascade far distances (view space)
+uniform sampler2D uShadowAtlas;
+uniform float     uShadowBias;
+uniform vec2      uShadowTexel;          // 1 / atlas size (x already accounts for tiling)
+
+// Returns sun visibility in [0,1] (1 = fully lit). Cascades are tiled left->right
+// in one atlas texture; each occupies 1/uShadowCount of the U range.
+float sampleShadow(vec3 worldPos, float viewDepth, vec3 N, vec3 L)
+{
+    if (uShadowCount <= 0)
+        return 1.0;
+
+    int c = uShadowCount - 1;
+    for (int i = 0; i < MAX_CASCADES; ++i)
+    {
+        if (i >= uShadowCount) break;
+        if (viewDepth < uShadowSplit[i]) { c = i; break; }
+    }
+
+    vec4 lp = uShadowVP[c] * vec4(worldPos, 1.0);
+    vec3 proj = lp.xyz / lp.w;
+    proj = proj * 0.5 + 0.5;
+    if (proj.z > 1.0)
+        return 1.0; // beyond the cascade's far plane: treat as lit
+
+    float invN = 1.0 / float(uShadowCount);
+    vec2 uv = vec2((float(c) + proj.x) * invN, proj.y);
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0)
+        return 1.0;
+
+    float bias = max(uShadowBias * (1.0 - dot(N, L)), uShadowBias * 0.15);
+    float current = proj.z - bias;
+
+    float lit = 0.0;
+    for (int x = -1; x <= 1; ++x)
+        for (int y = -1; y <= 1; ++y)
+        {
+            float d = texture(uShadowAtlas, uv + vec2(float(x), float(y)) * uShadowTexel).r;
+            lit += current <= d ? 1.0 : 0.0;
+        }
+    return lit / 9.0;
+}
 
 // ---- GPU value noise (for procedural terrain texturing) --------------------
 float hash21(vec2 p)
@@ -124,14 +172,15 @@ void main()
     vec3 V = normalize(uCameraPos - fragPos);
     vec3 lighting = uAmbientColor * uAmbientIntensity;
 
-    // Directional (sun) light + specular.
+    // Directional (sun) light + specular, attenuated by the shadow map.
     vec3 Ld = normalize(-uSunDir);
     float sunDiff = max(dot(N, Ld), 0.0);
-    lighting += uSunColor * uSunIntensity * sunDiff;
+    float shadow = sampleShadow(fragPos, vViewDepth, N, Ld);
+    lighting += uSunColor * uSunIntensity * sunDiff * shadow;
     if (sunDiff > 0.0)
     {
         vec3 H = normalize(Ld + V);
-        lighting += uSunColor * uSunIntensity * pow(max(dot(N, H), 0.0), 32.0) * 0.2;
+        lighting += uSunColor * uSunIntensity * pow(max(dot(N, H), 0.0), 32.0) * 0.2 * shadow;
     }
 
     // Point lights (already culled to the nearest few on the CPU).

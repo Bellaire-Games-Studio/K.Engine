@@ -52,6 +52,31 @@ namespace KDot
         bool  bloomEnabled = true;
         float bloomThreshold = 1.0f; // luminance above which pixels bloom (HDR: >1 = overbright)
         float bloomIntensity = 0.6f;
+
+        // ---- Cascaded shadow maps (sun) ------------------------------------
+        // WorldLayer computes the per-cascade light matrices each frame and hands
+        // them in via SetShadows; the shadow atlas is rendered with the Begin/
+        // ShadowCascade/Draw*/End calls below.
+        struct ShadowData
+        {
+            int       count = 0;
+            glm::mat4 lightVP[4];
+            float     splitFar[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+        };
+        bool  shadowsEnabled = true;
+        float shadowBias = 0.0025f;
+        float shadowDistance = 500.0f; // how far from the camera shadows are cast
+        int   shadowCascades = 3;
+        bool  ShadowsReady() const { return m_ShadowReady; }
+        int   ShadowMapSize() const { return m_ShadowSize; }
+
+        void InitShadows();                                        // atlas + depth programs + cube VBO
+        void BeginShadowPass();                                    // bind atlas, clear, set state
+        void ShadowCascade(int index, const glm::mat4 &lightVP);   // viewport + active light matrix
+        void DrawTerrainShadow();                                  // depth-render the cached terrain meshes
+        void DrawCubeShadow(const glm::mat4 &model);               // depth-render one box caster
+        void EndShadowPass();
+        void SetShadows(const ShadowData &sd);                     // upload to the main program + bind atlas
         void BeginStream(Camera &camera);
         void EndStream();
         // Orthographic 2D pass for HUD / sprites. Coordinates are in pixels with
@@ -186,6 +211,20 @@ namespace KDot
         GLint  u_BlTex = -1, u_BlTexel = -1, u_BlHorizontal = -1;
         void   BuildBloomResources(int width, int height);
         GLuint RenderBloom(); // returns the texture holding the final blurred bloom
+
+        // Shadow atlas (cascades tiled horizontally) + depth-only programs.
+        static constexpr int kShadowUnit = 15; // texture unit reserved for the shadow atlas
+        bool   m_ShadowReady = false;
+        int    m_ShadowSize = 0;  // per-cascade resolution (atlas width = count * size)
+        int    m_ShadowCount = 0; // cascades the atlas was built for
+        GLuint m_ShadowFBO = 0, m_ShadowTex = 0;
+        GLuint m_DepthWorldProg = 0; // world-space casters (terrain)
+        GLuint m_DepthModelProg = 0; // unit cube + model (props)
+        GLint  u_DwLightVP = -1, u_DmLightVP = -1, u_DmModel = -1;
+        GLuint m_CubeVAO = 0, m_CubeVBO = 0, m_CubeIBO = 0;
+        glm::mat4 m_CurShadowVP = glm::mat4(1.0f);
+        GLint  u_ShadowCount = -1, u_ShadowVP = -1, u_ShadowSplit = -1;
+        GLint  u_ShadowAtlas = -1, u_ShadowBias = -1, u_ShadowTexel = -1;
         // Dedicated buffers for DrawMesh (terrain / arbitrary indexed geometry).
         GLuint m_MeshVAO = 0;
         GLuint m_MeshVBO = 0;

@@ -13,7 +13,8 @@ out vec4 colorF;
 out vec3 normalF;
 out vec2 texCoordF;
 flat out uint texIndexF;
-out vec3 fragPos; // world-space position (geometry is pre-transformed on the CPU)
+out vec3 fragPos;      // world-space position (geometry is pre-transformed on the CPU)
+out float vViewDepth;  // distance in front of the camera (for shadow cascade pick)
 
 void main()
 {
@@ -22,5 +23,6 @@ void main()
     texCoordF = texCoord;
     texIndexF = texIndex;
     fragPos = position;
+    vViewDepth = -(view * vec4(position, 1.0)).z;
     gl_Position = projection * view * vec4(position, 1.0);
 }

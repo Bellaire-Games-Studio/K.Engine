@@ -40,6 +40,13 @@ namespace KDot
         }
         for (GLuint t : m_Textures)
             glDeleteTextures(1, &t);
+        if (m_DepthWorldProg) glDeleteProgram(m_DepthWorldProg);
+        if (m_DepthModelProg) glDeleteProgram(m_DepthModelProg);
+        if (m_ShadowTex)      glDeleteTextures(1, &m_ShadowTex);
+        if (m_ShadowFBO)      glDeleteFramebuffers(1, &m_ShadowFBO);
+        if (m_CubeVAO)        glDeleteVertexArrays(1, &m_CubeVAO);
+        if (m_CubeVBO)        glDeleteBuffers(1, &m_CubeVBO);
+        if (m_CubeIBO)        glDeleteBuffers(1, &m_CubeIBO);
     }
 
     namespace
@@ -169,6 +176,26 @@ namespace KDot
             "    }\n"
             "    fragColor = vec4(result, 1.0);\n"
             "}\n";
+
+        // Depth-only shadow programs. Terrain verts are already world-space; cube
+        // casters use a model matrix. The fragment stage writes nothing but depth.
+        const char* kDepthFrag =
+            "#version 300 es\n"
+            "precision highp float;\n"
+            "void main(){}\n";
+        const char* kDepthWorldVert =
+            "#version 300 es\n"
+            "precision highp float;\n"
+            "layout(location=0) in vec3 position;\n"
+            "uniform mat4 uLightVP;\n"
+            "void main(){ gl_Position = uLightVP * vec4(position, 1.0); }\n";
+        const char* kDepthModelVert =
+            "#version 300 es\n"
+            "precision highp float;\n"
+            "layout(location=0) in vec3 position;\n"
+            "uniform mat4 uLightVP;\n"
+            "uniform mat4 uModel;\n"
+            "void main(){ gl_Position = uLightVP * uModel * vec4(position, 1.0); }\n";
     }
     bool Renderer::InitShader(const char **ShaderSource, GLenum type)
     {
@@ -559,6 +586,14 @@ namespace KDot
             u_PointRadius[i]    = glGetUniformLocation(m_ShaderProgram, ("uPointRadius[" + s + "]").c_str());
         }
 
+        // Shadow-map uniforms ("[0]" form is portable for array bases).
+        u_ShadowCount = glGetUniformLocation(m_ShaderProgram, "uShadowCount");
+        u_ShadowVP    = glGetUniformLocation(m_ShaderProgram, "uShadowVP[0]");
+        u_ShadowSplit = glGetUniformLocation(m_ShaderProgram, "uShadowSplit[0]");
+        u_ShadowAtlas = glGetUniformLocation(m_ShaderProgram, "uShadowAtlas");
+        u_ShadowBias  = glGetUniformLocation(m_ShaderProgram, "uShadowBias");
+        u_ShadowTexel = glGetUniformLocation(m_ShaderProgram, "uShadowTexel");
+
         m_QuadVertexBufferBase = new Vertex[MaxVertices];
         QuadIndices = new uint32_t[MaxIndices];
         for (uint32_t i = 0; i < MaxIndices; i += 36)
@@ -795,6 +830,7 @@ namespace KDot
         glBindRenderbuffer(GL_RENDERBUFFER, 0);
 
         BuildTonemapResources(W, H);
+        InitShadows();
     }
 
     // Build the LDR resolve target + the fullscreen tonemap program.
@@ -959,6 +995,154 @@ namespace KDot
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
         glEnable(GL_DEPTH_TEST);
     }
+
+    // ---- Cascaded shadow maps ----------------------------------------------
+    void Renderer::InitShadows()
+    {
+        m_ShadowReady = false;
+
+        int s = QualitySettings::Get().shadowMapSize;
+        if (s <= 0) s = 2048;              // build anyway; runtime toggle gates use
+        s = std::min(s, 2048);             // cap atlas memory (atlas is count*s wide)
+        const int n = std::max(1, std::min(shadowCascades, 4));
+        m_ShadowSize = s;
+        m_ShadowCount = n;
+
+        // Depth atlas: n cascades tiled horizontally in one depth texture.
+        glGenFramebuffers(1, &m_ShadowFBO);
+        glBindFramebuffer(GL_FRAMEBUFFER, m_ShadowFBO);
+        glGenTextures(1, &m_ShadowTex);
+        glBindTexture(GL_TEXTURE_2D, m_ShadowTex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, s * n, s, 0,
+                     GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, NULL);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, m_ShadowTex, 0);
+        GLenum noBuf = GL_NONE; // depth-only: no colour attachment
+        glDrawBuffers(1, &noBuf);
+        glReadBuffer(GL_NONE);
+        const bool fboOk = (glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
+        if (!fboOk)
+            std::cout << "Shadow framebuffer not complete" << std::endl;
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glBindTexture(GL_TEXTURE_2D, 0);
+
+        m_DepthWorldProg = BuildStandaloneProgram(kDepthWorldVert, kDepthFrag);
+        m_DepthModelProg = BuildStandaloneProgram(kDepthModelVert, kDepthFrag);
+        if (m_DepthWorldProg)
+            u_DwLightVP = glGetUniformLocation(m_DepthWorldProg, "uLightVP");
+        if (m_DepthModelProg)
+        {
+            u_DmLightVP = glGetUniformLocation(m_DepthModelProg, "uLightVP");
+            u_DmModel   = glGetUniformLocation(m_DepthModelProg, "uModel");
+        }
+
+        // Unit-cube geometry for box shadow casters (reuses Compile's cube data).
+        float cube[24];
+        for (int i = 0; i < 8; ++i)
+        {
+            cube[i * 3 + 0] = m_CubeVertexPositions[i].x;
+            cube[i * 3 + 1] = m_CubeVertexPositions[i].y;
+            cube[i * 3 + 2] = m_CubeVertexPositions[i].z;
+        }
+        glGenVertexArrays(1, &m_CubeVAO);
+        glGenBuffers(1, &m_CubeVBO);
+        glGenBuffers(1, &m_CubeIBO);
+        glBindVertexArray(m_CubeVAO);
+        glBindBuffer(GL_ARRAY_BUFFER, m_CubeVBO);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(cube), cube, GL_STATIC_DRAW);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m_CubeIBO);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, 36 * sizeof(uint32_t), QuadIndices, GL_STATIC_DRAW);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void *)0);
+        glBindVertexArray(0);
+
+        m_ShadowReady = fboOk && m_DepthWorldProg && m_DepthModelProg;
+    }
+
+    void Renderer::BeginShadowPass()
+    {
+        if (!m_ShadowReady)
+            return;
+        glBindFramebuffer(GL_FRAMEBUFFER, m_ShadowFBO);
+        glViewport(0, 0, m_ShadowSize * m_ShadowCount, m_ShadowSize);
+        glEnable(GL_DEPTH_TEST);
+        glDepthMask(GL_TRUE);
+        glDisable(GL_BLEND);
+        glClear(GL_DEPTH_BUFFER_BIT);
+        // Push depth away from the light a touch to fight shadow acne.
+        glEnable(GL_POLYGON_OFFSET_FILL);
+        glPolygonOffset(2.0f, 4.0f);
+    }
+
+    void Renderer::ShadowCascade(int index, const glm::mat4 &lightVP)
+    {
+        if (!m_ShadowReady)
+            return;
+        glViewport(index * m_ShadowSize, 0, m_ShadowSize, m_ShadowSize);
+        m_CurShadowVP = lightVP;
+    }
+
+    void Renderer::DrawTerrainShadow()
+    {
+        if (!m_ShadowReady || !m_DepthWorldProg)
+            return;
+        glUseProgram(m_DepthWorldProg);
+        glUniformMatrix4fv(u_DwLightVP, 1, GL_FALSE, &m_CurShadowVP[0][0]);
+        for (auto &kv : m_MeshCache)
+        {
+            MeshCacheEntry &e = kv.second;
+            if (e.vao == 0 || e.indexCount == 0)
+                continue;
+            glBindVertexArray(e.vao);
+            glDrawElements(GL_TRIANGLES, e.indexCount, GL_UNSIGNED_INT, 0);
+        }
+    }
+
+    void Renderer::DrawCubeShadow(const glm::mat4 &model)
+    {
+        if (!m_ShadowReady || !m_DepthModelProg)
+            return;
+        glUseProgram(m_DepthModelProg);
+        glUniformMatrix4fv(u_DmLightVP, 1, GL_FALSE, &m_CurShadowVP[0][0]);
+        glUniformMatrix4fv(u_DmModel, 1, GL_FALSE, &model[0][0]);
+        glBindVertexArray(m_CubeVAO);
+        glDrawElements(GL_TRIANGLES, 36, GL_UNSIGNED_INT, 0);
+    }
+
+    void Renderer::EndShadowPass()
+    {
+        if (!m_ShadowReady)
+            return;
+        glDisable(GL_POLYGON_OFFSET_FILL);
+        glBindVertexArray(0);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    }
+
+    void Renderer::SetShadows(const ShadowData &sd)
+    {
+        glUseProgram(m_ShaderProgram);
+        const bool on = m_ShadowReady && shadowsEnabled && sd.count > 0;
+        const int count = on ? std::min(sd.count, 4) : 0;
+        if (u_ShadowCount >= 0)
+            glUniform1i(u_ShadowCount, count);
+        if (count <= 0)
+            return;
+
+        if (u_ShadowVP >= 0)    glUniformMatrix4fv(u_ShadowVP, count, GL_FALSE, &sd.lightVP[0][0][0]);
+        if (u_ShadowSplit >= 0) glUniform1fv(u_ShadowSplit, count, sd.splitFar);
+        if (u_ShadowBias >= 0)  glUniform1f(u_ShadowBias, shadowBias);
+        if (u_ShadowTexel >= 0)
+            glUniform2f(u_ShadowTexel, 1.0f / (float)(m_ShadowSize * m_ShadowCount), 1.0f / (float)m_ShadowSize);
+
+        glActiveTexture(GL_TEXTURE0 + kShadowUnit);
+        glBindTexture(GL_TEXTURE_2D, m_ShadowTex);
+        if (u_ShadowAtlas >= 0)
+            glUniform1i(u_ShadowAtlas, kShadowUnit);
+        glActiveTexture(GL_TEXTURE0);
+    }
     void Renderer::BindFrameBuffer()
     {
         glBindFramebuffer(GL_FRAMEBUFFER, m_FrameBuffer);
@@ -1006,7 +1190,8 @@ namespace KDot
 
     void Renderer::BindTextures()
     {
-        for (std::size_t i = 0; i < m_Textures.size() && i < 16; ++i)
+        // Units 0..14 are Prop textures; unit 15 (kShadowUnit) is the shadow atlas.
+        for (std::size_t i = 0; i < m_Textures.size() && i < (std::size_t)kShadowUnit; ++i)
         {
             glActiveTexture(GL_TEXTURE0 + (GLenum)i);
             glBindTexture(GL_TEXTURE_2D, m_Textures[i]);
@@ -1016,7 +1201,7 @@ namespace KDot
 
     int Renderer::LoadTextureFile(const char* path)
     {
-        if (m_Textures.size() >= 16)
+        if ((int)m_Textures.size() >= kShadowUnit)
             return 0;
         int w = 0, h = 0, n = 0;
         stbi_set_flip_vertically_on_load(true);
@@ -1046,7 +1231,7 @@ namespace KDot
 
     int Renderer::CreateCheckerTexture()
     {
-        if (m_Textures.size() >= 16)
+        if ((int)m_Textures.size() >= kShadowUnit)
             return 0;
         const int S = 64;
         std::vector<unsigned char> px(static_cast<std::size_t>(S) * S * 4);
