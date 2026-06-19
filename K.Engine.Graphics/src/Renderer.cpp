@@ -26,12 +26,8 @@ namespace KDot
         // Bloom resources (m_Bright*/m_Blur*/m_PostUbo) are RHI objects and release
         // their GL handles when the Renderer's unique_ptr members are destroyed.
         if (m_DepthTex)         glDeleteTextures(1, &m_DepthTex);
-        if (m_SsaoProgram)      glDeleteProgram(m_SsaoProgram);
-        if (m_SsaoBlurProgram)  glDeleteProgram(m_SsaoBlurProgram);
-        if (m_SsaoTex)          glDeleteTextures(1, &m_SsaoTex);
-        if (m_SsaoFBO)          glDeleteFramebuffers(1, &m_SsaoFBO);
-        if (m_SsaoBlurTex)      glDeleteTextures(1, &m_SsaoBlurTex);
-        if (m_SsaoBlurFBO)      glDeleteFramebuffers(1, &m_SsaoBlurFBO);
+        // SSAO resources (m_Ssao*) are RHI objects and free themselves with the
+        // Renderer's unique_ptr members.
         for (auto &kv : m_MeshCache)
         {
             if (kv.second.vao) glDeleteVertexArrays(1, &kv.second.vao);
@@ -213,11 +209,8 @@ namespace KDot
             "in vec2 vUV;\n"
             "out vec4 fragColor;\n"
             "uniform sampler2D uDepth;\n"
-            "uniform mat4 uProj;\n"
-            "uniform mat4 uInvProj;\n"
-            "uniform float uRadius;\n"
-            "uniform float uBias;\n"
-            "uniform float uIntensity;\n"
+            // std140 "Ssao" block: matrices + uParams = (radius, bias, intensity, _).
+            "layout(std140) uniform Ssao { mat4 uProj; mat4 uInvProj; vec4 uParams; };\n"
             "vec3 viewPos(vec2 uv){\n"
             "    float d = texture(uDepth, uv).r;\n"
             "    vec4 c = uInvProj * vec4(uv * 2.0 - 1.0, d * 2.0 - 1.0, 1.0);\n"
@@ -242,16 +235,16 @@ namespace KDot
             "        float th = fi * 6.2831853 * 4.0 + ang;\n"
             "        vec3 s = vec3(r * cos(th), r * sin(th), 0.25 + 0.75 * fi);\n"
             "        vec3 dir = T * s.x + B * s.y + N * s.z;\n"
-            "        vec3 sp = P + dir * uRadius;\n"
+            "        vec3 sp = P + dir * uParams.x;\n"
             "        vec4 o = uProj * vec4(sp, 1.0);\n"
             "        o.xyz /= o.w;\n"
             "        vec2 suv = o.xy * 0.5 + 0.5;\n"
             "        if (suv.x < 0.0 || suv.x > 1.0 || suv.y < 0.0 || suv.y > 1.0) continue;\n"
             "        float sceneZ = viewPos(suv).z;\n"
-            "        float rangeCheck = smoothstep(0.0, 1.0, uRadius / max(abs(P.z - sceneZ), 0.0001));\n"
-            "        occ += (sceneZ >= sp.z + uBias ? 1.0 : 0.0) * rangeCheck;\n"
+            "        float rangeCheck = smoothstep(0.0, 1.0, uParams.x / max(abs(P.z - sceneZ), 0.0001));\n"
+            "        occ += (sceneZ >= sp.z + uParams.y ? 1.0 : 0.0) * rangeCheck;\n"
             "    }\n"
-            "    float ao = 1.0 - (occ / float(K)) * uIntensity;\n"
+            "    float ao = 1.0 - (occ / float(K)) * uParams.z;\n"
             "    fragColor = vec4(clamp(ao, 0.0, 1.0));\n"
             "}\n";
 
@@ -262,12 +255,12 @@ namespace KDot
             "in vec2 vUV;\n"
             "out vec4 fragColor;\n"
             "uniform sampler2D uTex;\n"
-            "uniform vec2 uTexel;\n"
+            "layout(std140) uniform Post { vec4 uParams; };\n" // uParams.xy = texel
             "void main(){\n"
             "    float sum = 0.0;\n"
             "    for (int x = -2; x <= 2; ++x)\n"
             "        for (int y = -2; y <= 2; ++y)\n"
-            "            sum += texture(uTex, vUV + vec2(float(x), float(y)) * uTexel).r;\n"
+            "            sum += texture(uTex, vUV + vec2(float(x), float(y)) * uParams.xy).r;\n"
             "    fragColor = vec4(sum / 25.0);\n"
             "}\n";
     }
@@ -1051,82 +1044,97 @@ namespace KDot
         m_SsaoW = width;
         m_SsaoH = height;
 
-        auto makeTarget = [&](GLuint& fbo, GLuint& tex) {
-            glGenFramebuffers(1, &fbo);
-            glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-            glGenTextures(1, &tex);
-            glBindTexture(GL_TEXTURE_2D, tex);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
-            if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
-                std::cout << "SSAO framebuffer not complete" << std::endl;
-        };
-        makeTarget(m_SsaoFBO, m_SsaoTex);
-        makeTarget(m_SsaoBlurFBO, m_SsaoBlurTex);
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        glBindTexture(GL_TEXTURE_2D, 0);
+        if (!m_Rhi)
+            m_Rhi = rhi::CreateDevice();
+        if (!m_Rhi)
+            return;
 
-        m_SsaoProgram = BuildStandaloneProgram(kTonemapVert, kSsaoFrag);
-        if (m_SsaoProgram)
+        rhi::TextureDesc td;
+        td.width  = (uint32_t)width;
+        td.height = (uint32_t)height;
+        td.format = rhi::TextureFormat::RGBA8;
+        td.filter = rhi::TextureFilter::Linear;
+        td.wrap   = rhi::TextureWrap::ClampToEdge;
+
+        auto makeTarget = [&](std::unique_ptr<rhi::Texture>& tex,
+                              std::unique_ptr<rhi::RenderTarget>& rt) {
+            tex = m_Rhi->CreateTexture(td);
+            rhi::RenderTargetDesc rtd;
+            rtd.colors = {tex.get()};
+            rt = m_Rhi->CreateRenderTarget(rtd);
+        };
+        makeTarget(m_SsaoTex, m_SsaoRT);
+        makeTarget(m_SsaoBlurTex, m_SsaoBlurRT);
+
+        // Borrow the GL scene depth texture as the occlusion input (only when it
+        // exists; a 0 handle would otherwise allocate a fresh texture). RenderSSAO
+        // bails out when m_SsaoDepthTex is null, matching the old m_DepthTex==0 guard.
+        if (m_DepthTex != 0)
         {
-            u_SsDepth     = glGetUniformLocation(m_SsaoProgram, "uDepth");
-            u_SsProj      = glGetUniformLocation(m_SsaoProgram, "uProj");
-            u_SsInvProj   = glGetUniformLocation(m_SsaoProgram, "uInvProj");
-            u_SsRadius    = glGetUniformLocation(m_SsaoProgram, "uRadius");
-            u_SsBias      = glGetUniformLocation(m_SsaoProgram, "uBias");
-            u_SsIntensity = glGetUniformLocation(m_SsaoProgram, "uIntensity");
+            rhi::TextureDesc depthDesc;
+            depthDesc.externalHandle = m_DepthTex;
+            m_SsaoDepthTex = m_Rhi->CreateTexture(depthDesc);
         }
-        m_SsaoBlurProgram = BuildStandaloneProgram(kTonemapVert, kSsaoBlurFrag);
-        if (m_SsaoBlurProgram)
-        {
-            u_SbTex   = glGetUniformLocation(m_SsaoBlurProgram, "uTex");
-            u_SbTexel = glGetUniformLocation(m_SsaoBlurProgram, "uTexel");
-        }
+
+        // "Ssao" block: proj + invProj (mat4) + params (radius, bias, intensity).
+        m_SsaoUbo = m_Rhi->CreateBuffer(rhi::BufferType::Uniform, 2 * sizeof(glm::mat4) + sizeof(glm::vec4),
+                                        nullptr, true);
+        if (!m_PostUbo) // shared with the bloom/blur passes
+            m_PostUbo = m_Rhi->CreateBuffer(rhi::BufferType::Uniform, sizeof(glm::vec4), nullptr, true);
+
+        rhi::PipelineDesc od;
+        od.vertexSource   = kTonemapVert;
+        od.fragmentSource = kSsaoFrag;
+        od.depthTest = false; od.depthWrite = false; od.blend = false;
+        od.cull = rhi::CullMode::None;
+        od.constantsBlock = "Ssao";
+        m_SsaoPipe = m_Rhi->CreatePipeline(od);
+
+        rhi::PipelineDesc bd;
+        bd.vertexSource   = kTonemapVert;
+        bd.fragmentSource = kSsaoBlurFrag;
+        bd.depthTest = false; bd.depthWrite = false; bd.blend = false;
+        bd.cull = rhi::CullMode::None;
+        bd.constantsBlock = "Post";
+        m_SsaoBlurPipe = m_Rhi->CreatePipeline(bd);
     }
 
-    // Compute occlusion from the scene depth, then box-blur it. Returns the
-    // blurred AO texture (or 0 if SSAO is off / unavailable).
+    // Compute occlusion from the scene depth, then box-blur it. Returns the GL id
+    // of the blurred AO texture (or 0 if SSAO is off / unavailable).
     GLuint Renderer::RenderSSAO()
     {
-        if (!ssaoEnabled || !m_SsaoProgram || !m_SsaoBlurProgram || !m_TonemapVAO || m_DepthTex == 0)
+        if (!ssaoEnabled || !m_Rhi || !m_SsaoDepthTex ||
+            !m_SsaoPipe || !m_SsaoPipe->Valid() ||
+            !m_SsaoBlurPipe || !m_SsaoBlurPipe->Valid())
             return 0;
 
-        glViewport(0, 0, m_SsaoW, m_SsaoH);
-        glDisable(GL_DEPTH_TEST);
-        glDisable(GL_BLEND);
-        glBindVertexArray(m_TonemapVAO);
-
-        const glm::mat4 invProj = glm::inverse(m_SceneProjection);
+        // std140 layout matching the "Ssao" block.
+        struct SsaoConstants { glm::mat4 proj; glm::mat4 invProj; glm::vec4 params; };
+        SsaoConstants c{};
+        c.proj    = m_SceneProjection;
+        c.invProj = glm::inverse(m_SceneProjection);
+        c.params  = glm::vec4(ssaoRadius, ssaoBias, ssaoIntensity, 0.0f);
 
         // 1) Occlusion -> m_SsaoTex.
-        glBindFramebuffer(GL_FRAMEBUFFER, m_SsaoFBO);
-        glUseProgram(m_SsaoProgram);
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, m_DepthTex);
-        if (u_SsDepth >= 0)     glUniform1i(u_SsDepth, 0);
-        if (u_SsProj >= 0)      glUniformMatrix4fv(u_SsProj, 1, GL_FALSE, &m_SceneProjection[0][0]);
-        if (u_SsInvProj >= 0)   glUniformMatrix4fv(u_SsInvProj, 1, GL_FALSE, &invProj[0][0]);
-        if (u_SsRadius >= 0)    glUniform1f(u_SsRadius, ssaoRadius);
-        if (u_SsBias >= 0)      glUniform1f(u_SsBias, ssaoBias);
-        if (u_SsIntensity >= 0) glUniform1f(u_SsIntensity, ssaoIntensity);
-        glDrawArrays(GL_TRIANGLES, 0, 3);
+        m_Rhi->BeginRenderPass(m_SsaoRT.get());
+        m_Rhi->BindPipeline(*m_SsaoPipe);
+        m_Rhi->BindTexture(0, *m_SsaoDepthTex);
+        m_SsaoUbo->Update(&c, sizeof(c));
+        m_Rhi->BindUniformBuffer(0, *m_SsaoUbo);
+        m_Rhi->Draw(3);
+        m_Rhi->EndRenderPass();
 
         // 2) Box-blur -> m_SsaoBlurTex.
-        glBindFramebuffer(GL_FRAMEBUFFER, m_SsaoBlurFBO);
-        glUseProgram(m_SsaoBlurProgram);
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, m_SsaoTex);
-        if (u_SbTex >= 0)   glUniform1i(u_SbTex, 0);
-        if (u_SbTexel >= 0) glUniform2f(u_SbTexel, 1.0f / (float)m_SsaoW, 1.0f / (float)m_SsaoH);
-        glDrawArrays(GL_TRIANGLES, 0, 3);
+        const glm::vec4 texel(1.0f / (float)m_SsaoW, 1.0f / (float)m_SsaoH, 0.0f, 0.0f);
+        m_Rhi->BeginRenderPass(m_SsaoBlurRT.get());
+        m_Rhi->BindPipeline(*m_SsaoBlurPipe);
+        m_Rhi->BindTexture(0, *m_SsaoTex);
+        m_PostUbo->Update(&texel, sizeof(texel));
+        m_Rhi->BindUniformBuffer(0, *m_PostUbo);
+        m_Rhi->Draw(3);
+        m_Rhi->EndRenderPass();
 
-        glBindVertexArray(0);
-        glBindTexture(GL_TEXTURE_2D, 0);
-        return m_SsaoBlurTex;
+        return (GLuint)m_SsaoBlurTex->NativeHandle();
     }
 
     void Renderer::ResolveToneMap()

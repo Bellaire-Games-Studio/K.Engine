@@ -228,15 +228,20 @@ namespace KDot
         void   BuildBloomResources(int width, int height);
         GLuint RenderBloom(); // returns the GL id of the final blurred bloom texture
 
-        // SSAO: half-res occlusion from the scene depth texture, then a box blur.
+        // SSAO: half-res occlusion from the scene depth texture, then a box blur -
+        // ported to the RHI. m_SsaoDepthTex borrows the GL scene depth texture
+        // (m_DepthTex) until the scene target moves onto the RHI.
         int    m_SsaoW = 0, m_SsaoH = 0;
-        GLuint m_SsaoFBO = 0, m_SsaoTex = 0;
-        GLuint m_SsaoBlurFBO = 0, m_SsaoBlurTex = 0;
-        GLuint m_SsaoProgram = 0, m_SsaoBlurProgram = 0;
-        GLint  u_SsDepth = -1, u_SsProj = -1, u_SsInvProj = -1, u_SsRadius = -1, u_SsBias = -1, u_SsIntensity = -1, u_SsTexel = -1;
-        GLint  u_SbTex = -1, u_SbTexel = -1;
+        std::unique_ptr<rhi::Texture>      m_SsaoDepthTex;
+        std::unique_ptr<rhi::Texture>      m_SsaoTex;
+        std::unique_ptr<rhi::Texture>      m_SsaoBlurTex;
+        std::unique_ptr<rhi::RenderTarget> m_SsaoRT;
+        std::unique_ptr<rhi::RenderTarget> m_SsaoBlurRT;
+        std::unique_ptr<rhi::Pipeline>     m_SsaoPipe;
+        std::unique_ptr<rhi::Pipeline>     m_SsaoBlurPipe;
+        std::unique_ptr<rhi::Buffer>       m_SsaoUbo; // "Ssao" block (proj/invProj/params)
         void   BuildSsaoResources(int width, int height);
-        GLuint RenderSSAO(); // returns the blurred AO texture (or 0 if unavailable/off)
+        GLuint RenderSSAO(); // returns the GL id of the blurred AO texture (0 if off)
 
         // Shadow atlas (cascades tiled horizontally) + depth-only programs.
         static constexpr int kShadowUnit = 15; // texture unit reserved for the shadow atlas
