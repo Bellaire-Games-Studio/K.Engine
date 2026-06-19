@@ -151,6 +151,18 @@ namespace KDot
                 if (idx != GL_INVALID_INDEX)
                     glUniformBlockBinding(m_Program, idx, 0);
             }
+
+            // Assign each named sampler to its texture unit (samplers[i] -> unit i).
+            if (!desc.samplers.empty())
+            {
+                glUseProgram(m_Program);
+                for (std::size_t i = 0; i < desc.samplers.size(); ++i)
+                {
+                    GLint loc = glGetUniformLocation(m_Program, desc.samplers[i].c_str());
+                    if (loc >= 0)
+                        glUniform1i(loc, (GLint)i);
+                }
+            }
         }
         GLPipeline::~GLPipeline()
         {

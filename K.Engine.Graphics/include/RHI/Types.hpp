@@ -119,6 +119,10 @@ namespace KDot
             // Name of the std140 uniform block that receives per-draw constants
             // (bound to uniform slot 0). Empty = no constants block.
             std::string       constantsBlock = "Constants";
+            // Sampler uniform names in texture-unit order: samplers[i] is assigned
+            // to unit i at pipeline creation. Needed for passes that read more than
+            // one texture (a lone sampler defaults to unit 0, so it can be omitted).
+            std::vector<std::string> samplers;
         };
 
         inline uint32_t AttribComponentCount(AttribFormat f)

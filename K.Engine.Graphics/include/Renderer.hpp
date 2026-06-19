@@ -95,8 +95,13 @@ namespace KDot
         // capped by QualitySettings). Call once per frame inside BeginStream.
         void SetLights(const LightManager &lights, const glm::vec3 &cameraPos);
         // The editor displays the tonemapped LDR result (falls back to the raw
-        // scene texture if the tonemap program failed to build).
-        GLuint GetFrameBufferTexture() { return m_TonemapProgram ? m_ResolveTexture : m_Texture; }
+        // scene texture if the tonemap pipeline failed to build).
+        GLuint GetFrameBufferTexture()
+        {
+            return (m_ResolvePipe && m_ResolvePipe->Valid())
+                       ? (GLuint)m_ResolveTex->NativeHandle()
+                       : m_Texture;
+        }
         void LoadTexture(const char *path);
         // Load an image file as a sampled texture; returns a 1-based slot to put on
         // a Prop (0 on failure). CreateCheckerTexture makes a built-in checkerboard
@@ -197,20 +202,17 @@ namespace KDot
         GLuint m_RenderBuffer;
         GLuint m_Texture; // scene colour attachment (HDR RGBA16F when supported)
         GLuint m_DepthTex = 0; // scene depth, as a sampleable texture (for SSAO)
-        // HDR -> LDR tonemap resolve.
-        GLuint m_ResolveFBO = 0;
-        GLuint m_ResolveTexture = 0;
-        GLuint m_TonemapProgram = 0;
-        GLuint m_TonemapVAO = 0;
-        GLint  u_TmHdr = -1;
-        GLint  u_TmExposure = -1;
-        GLint  u_TmMode = -1;
-        GLint  u_TmBloom = -1;
-        GLint  u_TmBloomIntensity = -1;
+        // HDR -> LDR tonemap resolve, ported to the RHI. m_ResolveSceneTex borrows
+        // the scene colour texture (m_Texture) until the scene target is ported.
+        std::unique_ptr<rhi::Texture>      m_ResolveTex;
+        std::unique_ptr<rhi::RenderTarget> m_ResolveRT;
+        std::unique_ptr<rhi::Pipeline>     m_ResolvePipe;
+        std::unique_ptr<rhi::Buffer>       m_ResolveUbo; // "Resolve" block
+        std::unique_ptr<rhi::Texture>      m_ResolveSceneTex;
         bool   m_HdrEnabled = false;
         void   BuildTonemapResources(int width, int height);
-        // RHI device used by the passes that have been ported off raw GL (bloom
-        // today; the rest of the renderer migrates onto it over time).
+        // RHI device used by the passes that have been ported off raw GL (the post
+        // chain today; the rest of the renderer migrates onto it over time).
         std::unique_ptr<rhi::Device> m_Rhi;
         // Bloom (bright-pass + separable blur on a half-res HDR chain) - ported to
         // the RHI. m_BloomSceneTex borrows the scene colour texture (m_Texture)
@@ -224,9 +226,8 @@ namespace KDot
         std::unique_ptr<rhi::Pipeline>     m_BrightPipe;
         std::unique_ptr<rhi::Pipeline>     m_BlurPipe;
         std::unique_ptr<rhi::Buffer>       m_PostUbo; // per-pass "Post" constants
-        GLint  u_TmAo = -1, u_TmAoEnabled = -1;
         void   BuildBloomResources(int width, int height);
-        GLuint RenderBloom(); // returns the GL id of the final blurred bloom texture
+        rhi::Texture* RenderBloom(); // final blurred bloom texture (nullptr if off)
 
         // SSAO: half-res occlusion from the scene depth texture, then a box blur -
         // ported to the RHI. m_SsaoDepthTex borrows the GL scene depth texture
@@ -241,7 +242,7 @@ namespace KDot
         std::unique_ptr<rhi::Pipeline>     m_SsaoBlurPipe;
         std::unique_ptr<rhi::Buffer>       m_SsaoUbo; // "Ssao" block (proj/invProj/params)
         void   BuildSsaoResources(int width, int height);
-        GLuint RenderSSAO(); // returns the GL id of the blurred AO texture (0 if off)
+        rhi::Texture* RenderSSAO(); // blurred AO texture (nullptr if off / unavailable)
 
         // Shadow atlas (cascades tiled horizontally) + depth-only programs.
         static constexpr int kShadowUnit = 15; // texture unit reserved for the shadow atlas

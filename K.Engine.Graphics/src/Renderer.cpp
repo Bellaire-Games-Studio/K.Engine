@@ -19,12 +19,8 @@ namespace KDot
             glDeleteBuffers(1, &m_MeshVBO);
             glDeleteBuffers(1, &m_MeshIBO);
         }
-        if (m_TonemapProgram) glDeleteProgram(m_TonemapProgram);
-        if (m_TonemapVAO)     glDeleteVertexArrays(1, &m_TonemapVAO);
-        if (m_ResolveTexture) glDeleteTextures(1, &m_ResolveTexture);
-        if (m_ResolveFBO)     glDeleteFramebuffers(1, &m_ResolveFBO);
-        // Bloom resources (m_Bright*/m_Blur*/m_PostUbo) are RHI objects and release
-        // their GL handles when the Renderer's unique_ptr members are destroyed.
+        // Tonemap-resolve and bloom resources are RHI objects and release their GL
+        // handles when the Renderer's unique_ptr members are destroyed.
         if (m_DepthTex)         glDeleteTextures(1, &m_DepthTex);
         // SSAO resources (m_Ssao*) are RHI objects and free themselves with the
         // Renderer's unique_ptr members.
@@ -118,10 +114,8 @@ namespace KDot
             "uniform sampler2D uHdr;\n"
             "uniform sampler2D uBloom;\n"
             "uniform sampler2D uAo;\n"
-            "uniform float uExposure;\n"
-            "uniform float uBloomIntensity;\n"
-            "uniform float uAoEnabled;\n"
-            "uniform int uMode;\n"
+            // std140 "Resolve" block: (exposure, bloomIntensity, aoEnabled, mode).
+            "layout(std140) uniform Resolve { vec4 uParams; };\n"
             "vec3 aces(vec3 x){ float a=2.51,b=0.03,c=2.43,d=0.59,e=0.14;\n"
             "    return clamp((x*(a*x+b))/(x*(c*x+d)+e),0.0,1.0); }\n"
             "vec3 reinhard(vec3 x){ return x/(1.0+x); }\n"
@@ -129,14 +123,15 @@ namespace KDot
             "    return (X*(6.2*X+0.5))/(X*(6.2*X+1.7)+0.06); }\n"
             "void main(){\n"
             "    vec3 hdr = texture(uHdr, vUV).rgb;\n"
-            "    float ao = mix(1.0, texture(uAo, vUV).r, uAoEnabled);\n"
-            "    hdr *= ao;\n"                                          // contact darkening
-            "    hdr += texture(uBloom, vUV).rgb * uBloomIntensity;\n" // add glow in linear HDR
-            "    hdr *= uExposure;\n"
+            "    float ao = mix(1.0, texture(uAo, vUV).r, uParams.z);\n"
+            "    hdr *= ao;\n"                                       // contact darkening
+            "    hdr += texture(uBloom, vUV).rgb * uParams.y;\n"     // add glow in linear HDR
+            "    hdr *= uParams.x;\n"
+            "    int mode = int(uParams.w + 0.5);\n"
             "    vec3 c;\n"
-            "    if (uMode == 0) { fragColor = vec4(hdr, 1.0); return; }\n"   // linear passthrough
-            "    else if (uMode == 2) c = pow(reinhard(hdr), vec3(1.0/2.2));\n"
-            "    else if (uMode == 3) c = hejl(hdr);\n"                       // already sRGB-encoded
+            "    if (mode == 0) { fragColor = vec4(hdr, 1.0); return; }\n"   // linear passthrough
+            "    else if (mode == 2) c = pow(reinhard(hdr), vec3(1.0/2.2));\n"
+            "    else if (mode == 3) c = hejl(hdr);\n"                       // already sRGB-encoded
             "    else c = pow(aces(hdr), vec3(1.0/2.2));\n"
             "    fragColor = vec4(c, 1.0);\n"
             "}\n";
@@ -909,35 +904,39 @@ namespace KDot
     // Build the LDR resolve target + the fullscreen tonemap program.
     void Renderer::BuildTonemapResources(int width, int height)
     {
-        glGenFramebuffers(1, &m_ResolveFBO);
-        glBindFramebuffer(GL_FRAMEBUFFER, m_ResolveFBO);
+        if (!m_Rhi)
+            m_Rhi = rhi::CreateDevice();
+        if (!m_Rhi)
+            return;
 
-        glGenTextures(1, &m_ResolveTexture);
-        glBindTexture(GL_TEXTURE_2D, m_ResolveTexture);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR); // ImGui scales this one
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_ResolveTexture, 0);
-        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
-            std::cout << "Resolve framebuffer not complete" << std::endl;
+        // LDR resolve target (ImGui scales this one, so LINEAR).
+        rhi::TextureDesc td;
+        td.width  = (uint32_t)width;
+        td.height = (uint32_t)height;
+        td.format = rhi::TextureFormat::RGBA8;
+        td.filter = rhi::TextureFilter::Linear;
+        td.wrap   = rhi::TextureWrap::ClampToEdge;
+        m_ResolveTex = m_Rhi->CreateTexture(td);
+        rhi::RenderTargetDesc rtd;
+        rtd.colors = {m_ResolveTex.get()};
+        m_ResolveRT = m_Rhi->CreateRenderTarget(rtd);
 
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        glBindTexture(GL_TEXTURE_2D, 0);
+        // Borrow the scene colour texture as the HDR input (until the scene target
+        // is ported to the RHI).
+        rhi::TextureDesc sceneDesc;
+        sceneDesc.externalHandle = m_Texture;
+        m_ResolveSceneTex = m_Rhi->CreateTexture(sceneDesc);
 
-        m_TonemapProgram = BuildStandaloneProgram(kTonemapVert, kTonemapFrag);
-        if (m_TonemapProgram)
-        {
-            u_TmHdr            = glGetUniformLocation(m_TonemapProgram, "uHdr");
-            u_TmBloom          = glGetUniformLocation(m_TonemapProgram, "uBloom");
-            u_TmAo             = glGetUniformLocation(m_TonemapProgram, "uAo");
-            u_TmExposure       = glGetUniformLocation(m_TonemapProgram, "uExposure");
-            u_TmBloomIntensity = glGetUniformLocation(m_TonemapProgram, "uBloomIntensity");
-            u_TmAoEnabled      = glGetUniformLocation(m_TonemapProgram, "uAoEnabled");
-            u_TmMode           = glGetUniformLocation(m_TonemapProgram, "uMode");
-        }
-        glGenVertexArrays(1, &m_TonemapVAO); // empty VAO; positions come from gl_VertexID
+        m_ResolveUbo = m_Rhi->CreateBuffer(rhi::BufferType::Uniform, sizeof(glm::vec4), nullptr, true);
+
+        rhi::PipelineDesc pd;
+        pd.vertexSource   = kTonemapVert;
+        pd.fragmentSource = kTonemapFrag;
+        pd.depthTest = false; pd.depthWrite = false; pd.blend = false;
+        pd.cull = rhi::CullMode::None;
+        pd.constantsBlock = "Resolve";
+        pd.samplers = {"uHdr", "uBloom", "uAo"}; // units 0,1,2
+        m_ResolvePipe = m_Rhi->CreatePipeline(pd);
 
         BuildBloomResources(width / 2, height / 2); // bloom runs at half resolution
     }
@@ -996,14 +995,14 @@ namespace KDot
         m_BlurPipe   = makePipe(kBlurFrag);
     }
 
-    // Bright-pass the HDR scene then ping-pong a separable blur. Returns the GL id
-    // of the texture holding the final bloom (or 0 if bloom can't run this frame).
-    GLuint Renderer::RenderBloom()
+    // Bright-pass the HDR scene then ping-pong a separable blur. Returns the texture
+    // holding the final bloom (or nullptr if bloom can't run this frame).
+    rhi::Texture* Renderer::RenderBloom()
     {
         if (!bloomEnabled || !m_Rhi || !m_BloomSceneTex ||
             !m_BrightPipe || !m_BrightPipe->Valid() ||
             !m_BlurPipe || !m_BlurPipe->Valid())
-            return 0;
+            return nullptr;
 
         const glm::vec2 texel(1.0f / (float)m_BloomW, 1.0f / (float)m_BloomH);
 
@@ -1036,7 +1035,7 @@ namespace KDot
             src = m_BlurTex[1].get();
         }
 
-        return (GLuint)m_BlurTex[1]->NativeHandle();
+        return m_BlurTex[1].get();
     }
 
     void Renderer::BuildSsaoResources(int width, int height)
@@ -1099,14 +1098,14 @@ namespace KDot
         m_SsaoBlurPipe = m_Rhi->CreatePipeline(bd);
     }
 
-    // Compute occlusion from the scene depth, then box-blur it. Returns the GL id
-    // of the blurred AO texture (or 0 if SSAO is off / unavailable).
-    GLuint Renderer::RenderSSAO()
+    // Compute occlusion from the scene depth, then box-blur it. Returns the blurred
+    // AO texture (or nullptr if SSAO is off / unavailable).
+    rhi::Texture* Renderer::RenderSSAO()
     {
         if (!ssaoEnabled || !m_Rhi || !m_SsaoDepthTex ||
             !m_SsaoPipe || !m_SsaoPipe->Valid() ||
             !m_SsaoBlurPipe || !m_SsaoBlurPipe->Valid())
-            return 0;
+            return nullptr;
 
         // std140 layout matching the "Ssao" block.
         struct SsaoConstants { glm::mat4 proj; glm::mat4 invProj; glm::vec4 params; };
@@ -1134,52 +1133,35 @@ namespace KDot
         m_Rhi->Draw(3);
         m_Rhi->EndRenderPass();
 
-        return (GLuint)m_SsaoBlurTex->NativeHandle();
+        return m_SsaoBlurTex.get();
     }
 
     void Renderer::ResolveToneMap()
     {
-        if (!m_TonemapProgram || !m_ResolveFBO)
+        if (!m_Rhi || !m_ResolveSceneTex || !m_ResolvePipe || !m_ResolvePipe->Valid())
             return; // fall back to displaying the raw scene texture
 
         // Bloom + SSAO first (each writes its own targets), then the final resolve.
-        const GLuint bloomTex = RenderBloom();
-        const float bloomAmount = (bloomTex != 0) ? bloomIntensity : 0.0f;
-        const GLuint aoTex = RenderSSAO();
-        const float aoEnabled = (aoTex != 0) ? 1.0f : 0.0f;
+        rhi::Texture* bloomTex = RenderBloom();
+        const float bloomAmount = bloomTex ? bloomIntensity : 0.0f;
+        rhi::Texture* aoTex = RenderSSAO();
+        const float aoEnabled = aoTex ? 1.0f : 0.0f;
 
-        glBindFramebuffer(GL_FRAMEBUFFER, m_ResolveFBO);
-        glViewport(0, 0, 2560, 1440);
-        glDisable(GL_DEPTH_TEST);
-        glDisable(GL_BLEND);
+        // Bind a valid texture to every sampler even when a pass is off.
+        rhi::Texture& bloomBind = bloomTex ? *bloomTex : *m_ResolveSceneTex;
+        rhi::Texture& aoBind    = aoTex ? *aoTex : *m_ResolveSceneTex;
 
-        glUseProgram(m_TonemapProgram);
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, m_Texture);
-        glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D, bloomTex != 0 ? bloomTex : m_Texture); // valid sampler even when off
-        glActiveTexture(GL_TEXTURE2);
-        glBindTexture(GL_TEXTURE_2D, aoTex != 0 ? aoTex : m_Texture);
-        if (u_TmHdr >= 0)            glUniform1i(u_TmHdr, 0);
-        if (u_TmBloom >= 0)          glUniform1i(u_TmBloom, 1);
-        if (u_TmAo >= 0)             glUniform1i(u_TmAo, 2);
-        if (u_TmExposure >= 0)       glUniform1f(u_TmExposure, tonemapExposure);
-        if (u_TmBloomIntensity >= 0) glUniform1f(u_TmBloomIntensity, bloomAmount);
-        if (u_TmAoEnabled >= 0)      glUniform1f(u_TmAoEnabled, aoEnabled);
-        if (u_TmMode >= 0)           glUniform1i(u_TmMode, tonemapMode);
+        const glm::vec4 params(tonemapExposure, bloomAmount, aoEnabled, (float)tonemapMode);
 
-        glBindVertexArray(m_TonemapVAO);
-        glDrawArrays(GL_TRIANGLES, 0, 3);
-        glBindVertexArray(0);
-
-        glActiveTexture(GL_TEXTURE2);
-        glBindTexture(GL_TEXTURE_2D, 0);
-        glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D, 0);
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, 0);
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        glEnable(GL_DEPTH_TEST);
+        m_Rhi->BeginRenderPass(m_ResolveRT.get());
+        m_Rhi->BindPipeline(*m_ResolvePipe);
+        m_Rhi->BindTexture(0, *m_ResolveSceneTex);
+        m_Rhi->BindTexture(1, bloomBind);
+        m_Rhi->BindTexture(2, aoBind);
+        m_ResolveUbo->Update(&params, sizeof(params));
+        m_Rhi->BindUniformBuffer(0, *m_ResolveUbo);
+        m_Rhi->Draw(3);
+        m_Rhi->EndRenderPass();
     }
 
     // ---- Cascaded shadow maps ----------------------------------------------
