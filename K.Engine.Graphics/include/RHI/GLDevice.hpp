@@ -40,6 +40,40 @@ namespace KDot
             GLuint       m_Vao = 0;
         };
 
+        class GLTexture : public Texture
+        {
+        public:
+            explicit GLTexture(const TextureDesc& desc);
+            ~GLTexture() override;
+            uint64_t NativeHandle() const override { return m_Id; }
+            uint32_t Width() const override { return m_Width; }
+            uint32_t Height() const override { return m_Height; }
+
+            GLuint Id() const { return m_Id; }
+
+        private:
+            GLuint   m_Id = 0;
+            uint32_t m_Width = 0;
+            uint32_t m_Height = 0;
+            bool     m_Owned = true; // false when wrapping an external (borrowed) id
+        };
+
+        class GLRenderTarget : public RenderTarget
+        {
+        public:
+            explicit GLRenderTarget(const RenderTargetDesc& desc);
+            ~GLRenderTarget() override;
+            uint32_t Width() const override { return m_Width; }
+            uint32_t Height() const override { return m_Height; }
+
+            GLuint Fbo() const { return m_Fbo; }
+
+        private:
+            GLuint   m_Fbo = 0;
+            uint32_t m_Width = 0;
+            uint32_t m_Height = 0;
+        };
+
         class GLDevice : public Device
         {
         public:
@@ -51,6 +85,13 @@ namespace KDot
             void BindVertexBuffer(uint32_t binding, Buffer& buffer) override;
             void BindUniformBuffer(uint32_t slot, Buffer& buffer) override;
             void DrawInstanced(uint32_t vertexCount, uint32_t instanceCount) override;
+
+            std::unique_ptr<Texture>      CreateTexture(const TextureDesc& desc) override;
+            std::unique_ptr<RenderTarget> CreateRenderTarget(const RenderTargetDesc& desc) override;
+            void BeginRenderPass(RenderTarget* target, const RenderPassDesc& desc) override;
+            void EndRenderPass() override;
+            void BindTexture(uint32_t slot, Texture& texture) override;
+            void Draw(uint32_t vertexCount) override;
 
             const char* BackendName() const override { return "OpenGL"; }
 

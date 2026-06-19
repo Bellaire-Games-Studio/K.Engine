@@ -23,15 +23,8 @@ namespace KDot
         if (m_TonemapVAO)     glDeleteVertexArrays(1, &m_TonemapVAO);
         if (m_ResolveTexture) glDeleteTextures(1, &m_ResolveTexture);
         if (m_ResolveFBO)     glDeleteFramebuffers(1, &m_ResolveFBO);
-        if (m_BrightProgram)  glDeleteProgram(m_BrightProgram);
-        if (m_BlurProgram)    glDeleteProgram(m_BlurProgram);
-        if (m_BrightTex)      glDeleteTextures(1, &m_BrightTex);
-        if (m_BrightFBO)      glDeleteFramebuffers(1, &m_BrightFBO);
-        for (int i = 0; i < 2; ++i)
-        {
-            if (m_BlurTex[i]) glDeleteTextures(1, &m_BlurTex[i]);
-            if (m_BlurFBO[i]) glDeleteFramebuffers(1, &m_BlurFBO[i]);
-        }
+        // Bloom resources (m_Bright*/m_Blur*/m_PostUbo) are RHI objects and release
+        // their GL handles when the Renderer's unique_ptr members are destroyed.
         if (m_DepthTex)         glDeleteTextures(1, &m_DepthTex);
         if (m_SsaoProgram)      glDeleteProgram(m_SsaoProgram);
         if (m_SsaoBlurProgram)  glDeleteProgram(m_SsaoBlurProgram);
@@ -152,34 +145,38 @@ namespace KDot
             "    fragColor = vec4(c, 1.0);\n"
             "}\n";
 
-        // Bloom bright-pass: keep only the energy above a luminance threshold.
+        // Post-process passes (bloom) are driven through the RHI, so their per-pass
+        // scalars come from a std140 "Post" uniform block (one vec4) instead of loose
+        // glUniform calls: uParams = (texel.x, texel.y, horizontal, threshold).
+        // The single sampler defaults to texture unit 0 (bound via BindTexture(0,...)).
+
+        // Bloom bright-pass: keep only the energy above a luminance threshold (.w).
         const char* kBrightFrag =
             "#version 300 es\n"
             "precision highp float;\n"
             "in vec2 vUV;\n"
             "out vec4 fragColor;\n"
             "uniform sampler2D uScene;\n"
-            "uniform float uThreshold;\n"
+            "layout(std140) uniform Post { vec4 uParams; };\n"
             "void main(){\n"
             "    vec3 c = texture(uScene, vUV).rgb;\n"
             "    float b = max(max(c.r, c.g), c.b);\n"
-            "    float keep = max(b - uThreshold, 0.0) / max(b, 1e-4);\n"
+            "    float keep = max(b - uParams.w, 0.0) / max(b, 1e-4);\n"
             "    fragColor = vec4(c * keep, 1.0);\n"
             "}\n";
 
-        // Separable 9-tap Gaussian; uHorizontal picks the axis.
+        // Separable 9-tap Gaussian; uParams.z picks the axis, uParams.xy = texel.
         const char* kBlurFrag =
             "#version 300 es\n"
             "precision highp float;\n"
             "in vec2 vUV;\n"
             "out vec4 fragColor;\n"
             "uniform sampler2D uTex;\n"
-            "uniform vec2 uTexel;\n"
-            "uniform float uHorizontal;\n"
+            "layout(std140) uniform Post { vec4 uParams; };\n"
             "void main(){\n"
             "    float w[5];\n"
             "    w[0]=0.227027; w[1]=0.1945946; w[2]=0.1216216; w[3]=0.054054; w[4]=0.016216;\n"
-            "    vec2 dir = uHorizontal > 0.5 ? vec2(uTexel.x, 0.0) : vec2(0.0, uTexel.y);\n"
+            "    vec2 dir = uParams.z > 0.5 ? vec2(uParams.x, 0.0) : vec2(0.0, uParams.y);\n"
             "    vec3 result = texture(uTex, vUV).rgb * w[0];\n"
             "    for (int i = 1; i < 5; ++i){\n"
             "        result += texture(uTex, vUV + dir * float(i)).rgb * w[i];\n"
@@ -957,91 +954,96 @@ namespace KDot
         m_BloomW = width;
         m_BloomH = height;
 
-        auto makeTarget = [&](GLuint& fbo, GLuint& tex) {
-            glGenFramebuffers(1, &fbo);
-            glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-            glGenTextures(1, &tex);
-            glBindTexture(GL_TEXTURE_2D, tex);
-            // RGBA16F is texture-filterable in ES3/WebGL2, so the blur can sample linearly.
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, width, height, 0, GL_RGBA, GL_HALF_FLOAT, NULL);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, tex, 0);
-            if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
-                std::cout << "Bloom framebuffer not complete" << std::endl;
-        };
-        makeTarget(m_BrightFBO, m_BrightTex);
-        makeTarget(m_BlurFBO[0], m_BlurTex[0]);
-        makeTarget(m_BlurFBO[1], m_BlurTex[1]);
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        glBindTexture(GL_TEXTURE_2D, 0);
+        if (!m_Rhi)
+            m_Rhi = rhi::CreateDevice();
+        if (!m_Rhi)
+            return;
 
-        m_BrightProgram = BuildStandaloneProgram(kTonemapVert, kBrightFrag);
-        if (m_BrightProgram)
-        {
-            u_BrScene     = glGetUniformLocation(m_BrightProgram, "uScene");
-            u_BrThreshold = glGetUniformLocation(m_BrightProgram, "uThreshold");
-        }
-        m_BlurProgram = BuildStandaloneProgram(kTonemapVert, kBlurFrag);
-        if (m_BlurProgram)
-        {
-            u_BlTex        = glGetUniformLocation(m_BlurProgram, "uTex");
-            u_BlTexel      = glGetUniformLocation(m_BlurProgram, "uTexel");
-            u_BlHorizontal = glGetUniformLocation(m_BlurProgram, "uHorizontal");
-        }
+        // Half-res HDR ping-pong targets. RGBA16F is texture-filterable in
+        // ES3/WebGL2, so the blur can sample linearly.
+        rhi::TextureDesc td;
+        td.width  = (uint32_t)width;
+        td.height = (uint32_t)height;
+        td.format = rhi::TextureFormat::RGBA16F;
+        td.filter = rhi::TextureFilter::Linear;
+        td.wrap   = rhi::TextureWrap::ClampToEdge;
+
+        auto makeTarget = [&](std::unique_ptr<rhi::Texture>& tex,
+                              std::unique_ptr<rhi::RenderTarget>& rt) {
+            tex = m_Rhi->CreateTexture(td);
+            rhi::RenderTargetDesc rtd;
+            rtd.colors = {tex.get()};
+            rt = m_Rhi->CreateRenderTarget(rtd);
+        };
+        makeTarget(m_BrightTex, m_BrightRT);
+        makeTarget(m_BlurTex[0], m_BlurRT[0]);
+        makeTarget(m_BlurTex[1], m_BlurRT[1]);
+
+        // Borrow the scene colour texture (still owned by the GL scene FBO) as the
+        // bright-pass input until the scene target itself moves onto the RHI.
+        rhi::TextureDesc sceneDesc;
+        sceneDesc.externalHandle = m_Texture;
+        m_BloomSceneTex = m_Rhi->CreateTexture(sceneDesc);
+
+        // Per-pass "Post" constants (one vec4); see the bloom shaders above.
+        m_PostUbo = m_Rhi->CreateBuffer(rhi::BufferType::Uniform, sizeof(glm::vec4), nullptr, true);
+
+        auto makePipe = [&](const char* frag) {
+            rhi::PipelineDesc pd;
+            pd.vertexSource    = kTonemapVert; // fullscreen triangle from gl_VertexID
+            pd.fragmentSource  = frag;
+            pd.depthTest       = false;
+            pd.depthWrite      = false;
+            pd.blend           = false;
+            pd.cull            = rhi::CullMode::None;
+            pd.constantsBlock  = "Post";
+            return m_Rhi->CreatePipeline(pd); // no vertex layout: fullscreen pass
+        };
+        m_BrightPipe = makePipe(kBrightFrag);
+        m_BlurPipe   = makePipe(kBlurFrag);
     }
 
-    // Bright-pass the HDR scene then ping-pong a separable blur. Returns the
-    // texture holding the final bloom (or 0 if bloom can't run this frame).
+    // Bright-pass the HDR scene then ping-pong a separable blur. Returns the GL id
+    // of the texture holding the final bloom (or 0 if bloom can't run this frame).
     GLuint Renderer::RenderBloom()
     {
-        if (!bloomEnabled || !m_BrightProgram || !m_BlurProgram || !m_TonemapVAO)
+        if (!bloomEnabled || !m_Rhi || !m_BloomSceneTex ||
+            !m_BrightPipe || !m_BrightPipe->Valid() ||
+            !m_BlurPipe || !m_BlurPipe->Valid())
             return 0;
 
-        glViewport(0, 0, m_BloomW, m_BloomH);
-        glDisable(GL_DEPTH_TEST);
-        glDisable(GL_BLEND);
-        glBindVertexArray(m_TonemapVAO);
+        const glm::vec2 texel(1.0f / (float)m_BloomW, 1.0f / (float)m_BloomH);
+
+        // A fullscreen pass: bind target + pipeline + input texture, upload the
+        // "Post" params (texel.xy, horizontal, threshold), then draw 3 verts.
+        auto pass = [&](rhi::RenderTarget* rt, rhi::Pipeline& pipe, rhi::Texture& input,
+                        const glm::vec4& params) {
+            m_Rhi->BeginRenderPass(rt);
+            m_Rhi->BindPipeline(pipe);
+            m_Rhi->BindTexture(0, input);
+            m_PostUbo->Update(&params, sizeof(params));
+            m_Rhi->BindUniformBuffer(0, *m_PostUbo);
+            m_Rhi->Draw(3);
+            m_Rhi->EndRenderPass();
+        };
 
         // 1) Bright-pass scene -> m_BrightTex.
-        glBindFramebuffer(GL_FRAMEBUFFER, m_BrightFBO);
-        glUseProgram(m_BrightProgram);
-        glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, m_Texture);
-        if (u_BrScene >= 0)     glUniform1i(u_BrScene, 0);
-        if (u_BrThreshold >= 0) glUniform1f(u_BrThreshold, bloomThreshold);
-        glDrawArrays(GL_TRIANGLES, 0, 3);
+        pass(m_BrightRT.get(), *m_BrightPipe, *m_BloomSceneTex,
+             glm::vec4(texel.x, texel.y, 0.0f, bloomThreshold));
 
         // 2) Separable blur, ping-ponging between the two blur targets.
-        glUseProgram(m_BlurProgram);
-        if (u_BlTex >= 0)   glUniform1i(u_BlTex, 0);
-        if (u_BlTexel >= 0) glUniform2f(u_BlTexel, 1.0f / (float)m_BloomW, 1.0f / (float)m_BloomH);
-
-        GLuint src = m_BrightTex;
+        rhi::Texture* src = m_BrightTex.get();
         const int kIterations = 2; // 2 H+V passes => a soft, wide glow
         for (int i = 0; i < kIterations; ++i)
         {
-            // Horizontal: src -> blur[0]
-            glBindFramebuffer(GL_FRAMEBUFFER, m_BlurFBO[0]);
-            if (u_BlHorizontal >= 0) glUniform1f(u_BlHorizontal, 1.0f);
-            glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_2D, src);
-            glDrawArrays(GL_TRIANGLES, 0, 3);
-
-            // Vertical: blur[0] -> blur[1]
-            glBindFramebuffer(GL_FRAMEBUFFER, m_BlurFBO[1]);
-            if (u_BlHorizontal >= 0) glUniform1f(u_BlHorizontal, 0.0f);
-            glBindTexture(GL_TEXTURE_2D, m_BlurTex[0]);
-            glDrawArrays(GL_TRIANGLES, 0, 3);
-
-            src = m_BlurTex[1];
+            pass(m_BlurRT[0].get(), *m_BlurPipe, *src,
+                 glm::vec4(texel.x, texel.y, 1.0f, 0.0f)); // horizontal
+            pass(m_BlurRT[1].get(), *m_BlurPipe, *m_BlurTex[0],
+                 glm::vec4(texel.x, texel.y, 0.0f, 0.0f)); // vertical
+            src = m_BlurTex[1].get();
         }
 
-        glBindVertexArray(0);
-        glBindTexture(GL_TEXTURE_2D, 0);
-        return m_BlurTex[1];
+        return (GLuint)m_BlurTex[1]->NativeHandle();
     }
 
     void Renderer::BuildSsaoResources(int width, int height)

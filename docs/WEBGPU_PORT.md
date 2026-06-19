@@ -21,10 +21,10 @@ It is **not runnable** for two structural reasons:
 1. **One canvas, one API.** A browser canvas exposes either WebGL2 *or* WebGPU,
    not both. The entire renderer must move at once — you can't run terrain/props
    on WebGL2 and grass on WebGPU side by side.
-2. **The renderer is still raw GL.** Only `GrassRenderer` uses the RHI. The main
-   `Renderer` is ~444 raw `gl*` calls (terrain, props, lighting, HDR, bloom,
-   SSAO, shadows, tonemap), the 4 scene shaders are GLSL, and the editor UI
-   renders through `ImGui_ImplOpenGL3`.
+2. **The renderer is still mostly raw GL.** `GrassRenderer` and now the bloom
+   chain go through the RHI, but the main `Renderer` is still hundreds of raw
+   `gl*` calls (terrain, props, lighting, HDR, SSAO, shadows, tonemap), the 4
+   scene shaders are GLSL, and the editor UI renders through `ImGui_ImplOpenGL3`.
 
 ## Why the RHI has to grow first
 
@@ -42,10 +42,21 @@ sampled textures that the RHI doesn't expose.
    RenderTarget/Framebuffer, a render-pass abstraction, index buffers, and
    `BeginFrame`/`EndFrame`/`Present`. Keep the GL backend (`GLDevice`) passing the
    existing tests at every step — it stays the reference implementation.
+   *In progress:* `Texture`, `RenderTarget`, `BeginRenderPass`/`EndRenderPass`,
+   `BindTexture`, non-instanced `Draw`, and inline shader source are in (GL backend
+   implemented). Still to add: samplers as first-class objects, index buffers +
+   `DrawIndexed`, depth attachments on render targets, and frame submission hooks.
 2. **Port `Renderer.cpp` onto the RHI.** Replace the 444 `gl*` calls with RHI
    calls, pass by pass (scene → shadow atlas → bloom → SSAO → tonemap resolve).
    This is the bulk of the work and is **independently verifiable on the GL
    backend** before any WebGPU runs.
+   *In progress:* the **bloom** chain (bright-pass + separable blur) is ported —
+   it now runs through `rhi::Device` (RHI textures/render-targets/pipelines + a
+   `Post` uniform block) instead of raw GL. The bright-pass input still *borrows*
+   the GL scene colour texture via `TextureDesc::externalHandle`, and the tonemap
+   resolve reads the bloom result via `Texture::NativeHandle()`; both seams go away
+   once the scene target + SSAO + resolve are ported too. Next: SSAO, then the
+   tonemap resolve + scene render target (which removes both transitional seams).
 3. **Translate every shader to WGSL.** Scene (`FragmentShader`/`VertexShader`),
    grass (done), and the post/tonemap/SSAO/shadow programs. Keep the GLSL set for
    the GL backend; pick per backend (or compile WGSL→GLSL/SPIR-V via Tint).

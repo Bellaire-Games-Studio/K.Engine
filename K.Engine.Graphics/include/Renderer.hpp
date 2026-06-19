@@ -5,9 +5,11 @@
 #include <stdlib.h>
 #include <fstream>
 #include <cstdint>
+#include <memory>
 #include <unordered_map>
 #include <Math/Vector.hpp>
 #include <Core/MeshData.hpp>
+#include <RHI/Device.hpp>
 #include <Light.hpp>
 #include <glm.hpp>
 #include <gtx/rotate_vector.hpp>
@@ -207,18 +209,24 @@ namespace KDot
         GLint  u_TmBloomIntensity = -1;
         bool   m_HdrEnabled = false;
         void   BuildTonemapResources(int width, int height);
-        // Bloom (bright-pass + separable blur on a half-res HDR chain).
+        // RHI device used by the passes that have been ported off raw GL (bloom
+        // today; the rest of the renderer migrates onto it over time).
+        std::unique_ptr<rhi::Device> m_Rhi;
+        // Bloom (bright-pass + separable blur on a half-res HDR chain) - ported to
+        // the RHI. m_BloomSceneTex borrows the scene colour texture (m_Texture)
+        // until the scene target is itself moved onto the RHI.
         int    m_BloomW = 0, m_BloomH = 0;
-        GLuint m_BrightFBO = 0, m_BrightTex = 0;
-        GLuint m_BlurFBO[2] = {0, 0};
-        GLuint m_BlurTex[2] = {0, 0};
-        GLuint m_BrightProgram = 0;
-        GLuint m_BlurProgram = 0;
-        GLint  u_BrScene = -1, u_BrThreshold = -1;
-        GLint  u_BlTex = -1, u_BlTexel = -1, u_BlHorizontal = -1;
+        std::unique_ptr<rhi::Texture>      m_BloomSceneTex;
+        std::unique_ptr<rhi::Texture>      m_BrightTex;
+        std::unique_ptr<rhi::Texture>      m_BlurTex[2];
+        std::unique_ptr<rhi::RenderTarget> m_BrightRT;
+        std::unique_ptr<rhi::RenderTarget> m_BlurRT[2];
+        std::unique_ptr<rhi::Pipeline>     m_BrightPipe;
+        std::unique_ptr<rhi::Pipeline>     m_BlurPipe;
+        std::unique_ptr<rhi::Buffer>       m_PostUbo; // per-pass "Post" constants
         GLint  u_TmAo = -1, u_TmAoEnabled = -1;
         void   BuildBloomResources(int width, int height);
-        GLuint RenderBloom(); // returns the texture holding the final blurred bloom
+        GLuint RenderBloom(); // returns the GL id of the final blurred bloom texture
 
         // SSAO: half-res occlusion from the scene depth texture, then a box blur.
         int    m_SsaoW = 0, m_SsaoH = 0;

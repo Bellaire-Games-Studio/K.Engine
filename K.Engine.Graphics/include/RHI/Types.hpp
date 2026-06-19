@@ -45,6 +45,40 @@ namespace KDot
             Triangles
         };
 
+        // ---- Textures / render targets -----------------------------------------
+        enum class TextureFormat
+        {
+            RGBA8,    // 8-bit LDR colour
+            RGBA16F,  // half-float HDR colour (filterable on ES3/WebGL2)
+            Depth24   // sampleable depth
+        };
+
+        enum class TextureFilter
+        {
+            Nearest,
+            Linear
+        };
+
+        enum class TextureWrap
+        {
+            ClampToEdge,
+            Repeat
+        };
+
+        struct TextureDesc
+        {
+            uint32_t      width = 0;
+            uint32_t      height = 0;
+            TextureFormat format = TextureFormat::RGBA8;
+            TextureFilter filter = TextureFilter::Linear;
+            TextureWrap   wrap = TextureWrap::ClampToEdge;
+            // Transitional: when non-zero, wrap an already-created backend texture
+            // (e.g. a GL texture id owned elsewhere) instead of allocating one. The
+            // RHI texture then borrows it and never frees it. Used while the renderer
+            // is migrated onto the RHI pass by pass; removed once ownership moves over.
+            uint64_t      externalHandle = 0;
+        };
+
         struct VertexAttribute
         {
             uint32_t     location; // shader attribute location
@@ -70,6 +104,12 @@ namespace KDot
         {
             std::string       vertexShaderPath;
             std::string       fragmentShaderPath;
+            // Inline GLES-3.00 source. When non-empty these are compiled directly
+            // instead of reading the *Path files - used for the small generated
+            // post-process shaders that live in the renderer (and for any backend
+            // that prefers in-memory source over a file).
+            std::string       vertexSource;
+            std::string       fragmentSource;
             VertexLayout      layout;
             PrimitiveTopology topology = PrimitiveTopology::Triangles;
             bool              depthTest = true;
