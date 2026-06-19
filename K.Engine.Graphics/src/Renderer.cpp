@@ -542,6 +542,18 @@ namespace KDot
             glUniform1i(u_ShadeMode, m_ShadeMode);
         if (u_CameraPos >= 0)
             glUniform3fv(u_CameraPos, 1, &m_CameraWorldPos[0]);
+
+        // PBR surface detail. The fidelity dial gates the cost: normal/bump above
+        // the Low tier, parallax (the ray-march) only past the mid tier.
+        const QualitySettings& q = QualitySettings::Get();
+        const bool  normalOn   = pbrEnabled && q.normalMapping;
+        const int   parallax   = pbrEnabled ? q.parallaxSteps : 0;
+        if (u_PbrEnabled >= 0)     glUniform1i(u_PbrEnabled, pbrEnabled ? 1 : 0);
+        if (u_NormalStrength >= 0) glUniform1f(u_NormalStrength, normalOn ? pbrNormalStrength : 0.0f);
+        if (u_ParallaxSteps >= 0)  glUniform1i(u_ParallaxSteps, parallax);
+        if (u_ParallaxScale >= 0)  glUniform1f(u_ParallaxScale, pbrParallaxScale);
+        if (u_Roughness >= 0)      glUniform1f(u_Roughness, pbrRoughness);
+        if (u_AoStrength >= 0)     glUniform1f(u_AoStrength, pbrAoStrength);
     }
     void Renderer::Flush()
     {
@@ -635,6 +647,13 @@ namespace KDot
         u_PointCount = glGetUniformLocation(m_ShaderProgram, "uPointCount");
         u_FogColor = glGetUniformLocation(m_ShaderProgram, "uFogColor");
         u_FogDensity = glGetUniformLocation(m_ShaderProgram, "uFogDensity");
+
+        u_PbrEnabled     = glGetUniformLocation(m_ShaderProgram, "uPbrEnabled");
+        u_NormalStrength = glGetUniformLocation(m_ShaderProgram, "uNormalStrength");
+        u_ParallaxSteps  = glGetUniformLocation(m_ShaderProgram, "uParallaxSteps");
+        u_ParallaxScale  = glGetUniformLocation(m_ShaderProgram, "uParallaxScale");
+        u_Roughness      = glGetUniformLocation(m_ShaderProgram, "uRoughness");
+        u_AoStrength     = glGetUniformLocation(m_ShaderProgram, "uAoStrength");
 
         // Cache the indexed point-light uniform locations up front.
         for (int i = 0; i < kMaxShaderPointLights; ++i)

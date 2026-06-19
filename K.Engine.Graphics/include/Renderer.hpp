@@ -59,6 +59,15 @@ namespace KDot
         float ssaoRadius = 1.5f;    // view-space sampling radius
         float ssaoBias = 0.03f;     // depth bias to avoid self-occlusion
         float ssaoIntensity = 1.0f; // 0 = none
+        // PBR-style surface detail derived from the albedo texture (normal/bump,
+        // parallax "displacement", cavity AO) + a roughness term. The expensive
+        // parts are gated by QualitySettings (fidelity dial); these are the
+        // inspector-tunable strengths.
+        bool  pbrEnabled = true;
+        float pbrNormalStrength = 1.0f;  // bump intensity
+        float pbrParallaxScale = 0.05f;  // displacement depth
+        float pbrRoughness = 0.55f;      // 0 = glossy, 1 = matte
+        float pbrAoStrength = 0.7f;      // derived cavity AO amount
 
         // ---- Cascaded shadow maps (sun) ------------------------------------
         // WorldLayer computes the per-cascade light matrices each frame and hands
@@ -185,6 +194,13 @@ namespace KDot
         GLint u_PointCount = -1;
         GLint u_FogColor = -1;
         GLint u_FogDensity = -1;
+        // PBR surface-detail uniforms.
+        GLint u_PbrEnabled = -1;
+        GLint u_NormalStrength = -1;
+        GLint u_ParallaxSteps = -1;
+        GLint u_ParallaxScale = -1;
+        GLint u_Roughness = -1;
+        GLint u_AoStrength = -1;
         // Per-point-light uniform locations, cached once at compile time instead
         // of being re-queried by string every frame (one of the per-frame costs).
         GLint u_PointPos[kMaxShaderPointLights];

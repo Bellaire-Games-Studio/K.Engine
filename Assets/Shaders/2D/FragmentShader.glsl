@@ -35,6 +35,19 @@ uniform float uPointRadius[MAX_POINT_LIGHTS];
 uniform vec3  uFogColor;
 uniform float uFogDensity;
 
+// ---- PBR-style surface detail (derived from the albedo texture) -------------
+//  No authored normal/height/AO maps yet: a heightfield is read from the albedo
+//  luminance and used for parallax (displacement), a derivative-based normal
+//  (bump) and a cavity AO term. uRoughness drives the specular lobe. All of this
+//  is gated by QualitySettings (uParallaxSteps == 0 / uNormalStrength == 0 turn
+//  the expensive / bump parts off), so it scales with the fidelity dial.
+uniform int   uPbrEnabled;     // 0 = legacy lit look
+uniform float uNormalStrength; // 0 = no bump
+uniform int   uParallaxSteps;  // 0 = no displacement
+uniform float uParallaxScale;  // displacement depth
+uniform float uRoughness;      // 0 = glossy, 1 = matte
+uniform float uAoStrength;     // derived cavity AO amount
+
 // ---- Cascaded shadow maps (sun) --------------------------------------------
 const int MAX_CASCADES = 4;
 uniform int       uShadowCount;          // 0 = shadows disabled (no-op)
@@ -131,37 +144,137 @@ vec3 proceduralTerrain(vec3 p, vec3 N)
     return col;
 }
 
-vec4 sampleBase()
+// Albedo sample for a given (1-based) texture index at an explicit UV.
+vec4 sampleAlbedo(int ti, vec2 uv)
 {
-    int ti = int(texIndexF);
-    if      (ti == 1)  return colorF * texture(tex0,  texCoordF);
-    else if (ti == 2)  return colorF * texture(tex1,  texCoordF);
-    else if (ti == 3)  return colorF * texture(tex2,  texCoordF);
-    else if (ti == 4)  return colorF * texture(tex3,  texCoordF);
-    else if (ti == 5)  return colorF * texture(tex4,  texCoordF);
-    else if (ti == 6)  return colorF * texture(tex5,  texCoordF);
-    else if (ti == 7)  return colorF * texture(tex6,  texCoordF);
-    else if (ti == 8)  return colorF * texture(tex7,  texCoordF);
-    else if (ti == 9)  return colorF * texture(tex8,  texCoordF);
-    else if (ti == 10) return colorF * texture(tex9,  texCoordF);
-    else if (ti == 11) return colorF * texture(tex10, texCoordF);
-    else if (ti == 12) return colorF * texture(tex11, texCoordF);
-    else if (ti == 13) return colorF * texture(tex12, texCoordF);
-    else if (ti == 14) return colorF * texture(tex13, texCoordF);
-    else if (ti == 15) return colorF * texture(tex14, texCoordF);
-    else if (ti == 16) return colorF * texture(tex15, texCoordF);
-    return colorF;
+    if      (ti == 1)  return texture(tex0,  uv);
+    else if (ti == 2)  return texture(tex1,  uv);
+    else if (ti == 3)  return texture(tex2,  uv);
+    else if (ti == 4)  return texture(tex3,  uv);
+    else if (ti == 5)  return texture(tex4,  uv);
+    else if (ti == 6)  return texture(tex5,  uv);
+    else if (ti == 7)  return texture(tex6,  uv);
+    else if (ti == 8)  return texture(tex7,  uv);
+    else if (ti == 9)  return texture(tex8,  uv);
+    else if (ti == 10) return texture(tex9,  uv);
+    else if (ti == 11) return texture(tex10, uv);
+    else if (ti == 12) return texture(tex11, uv);
+    else if (ti == 13) return texture(tex12, uv);
+    else if (ti == 14) return texture(tex13, uv);
+    else if (ti == 15) return texture(tex14, uv);
+    else if (ti == 16) return texture(tex15, uv);
+    return vec4(1.0);
+}
+
+float luma(vec3 c) { return dot(c, vec3(0.299, 0.587, 0.114)); }
+
+// Derived heightfield: brighter albedo == raised, darker (mortar, cracks) == recessed.
+float heightAt(int ti, vec2 uv) { return luma(sampleAlbedo(ti, uv).rgb); }
+
+// Parallax occlusion mapping: walk the view ray through the heightfield (in
+// tangent space) and return the displaced UV. viewT is the view dir in tangent
+// space (surface -> eye). Bounded loop so it stays uniform-friendly.
+vec2 parallaxUV(int ti, vec2 uv, vec3 viewT)
+{
+    if (uParallaxSteps <= 0)
+        return uv;
+
+    const int MAX_STEPS = 32;
+    float numLayers = float(uParallaxSteps);
+    float layerDepth = 1.0 / numLayers;
+    vec2  maxOffset = (viewT.xy / max(abs(viewT.z), 0.3)) * uParallaxScale;
+    vec2  deltaUV = maxOffset / numLayers;
+
+    float curDepth = 0.0;
+    vec2  curUV = uv;
+    float curH = 1.0 - heightAt(ti, curUV); // depth = 1 - height
+    for (int i = 0; i < MAX_STEPS; ++i)
+    {
+        if (i >= uParallaxSteps || curDepth >= curH)
+            break;
+        curUV -= deltaUV;
+        curH = 1.0 - heightAt(ti, curUV);
+        curDepth += layerDepth;
+    }
+
+    // Interpolate between the last two layers for a smooth intersection.
+    vec2  prevUV = curUV + deltaUV;
+    float afterD = curH - curDepth;
+    float beforeD = (1.0 - heightAt(ti, prevUV)) - (curDepth - layerDepth);
+    float w = afterD / (afterD - beforeD + 1e-5);
+    return mix(curUV, prevUV, clamp(w, 0.0, 1.0));
+}
+
+// Perturb a geometric normal by the screen-space gradient of the heightfield,
+// with no precomputed tangents (Mikkelsen's surface-gradient bump mapping).
+vec3 perturbNormal(vec3 N, vec3 p, float h, float strength)
+{
+    vec3 dpx = dFdx(p);
+    vec3 dpy = dFdy(p);
+    float dhx = dFdx(h);
+    float dhy = dFdy(h);
+    vec3 r1 = cross(dpy, N);
+    vec3 r2 = cross(N, dpx);
+    float det = dot(dpx, r1);
+    if (abs(det) < 1e-7)
+        return N; // degenerate (tiny/edge-on triangle): keep the geometric normal
+    vec3 grad = sign(det) * (dhx * r1 + dhy * r2);
+    return normalize(abs(det) * N - strength * grad);
+}
+
+// Cotangent frame (T, B, N) from screen-space derivatives, for tangent-space math.
+mat3 cotangentFrame(vec3 N, vec3 p, vec2 uv)
+{
+    vec3 dp1 = dFdx(p), dp2 = dFdy(p);
+    vec2 duv1 = dFdx(uv), duv2 = dFdy(uv);
+    vec3 dp2perp = cross(dp2, N);
+    vec3 dp1perp = cross(N, dp1);
+    vec3 T = dp2perp * duv1.x + dp1perp * duv2.x;
+    vec3 B = dp2perp * duv1.y + dp1perp * duv2.y;
+    // epsilon keeps invmax finite when the UVs don't vary (avoids NaN T/B).
+    float invmax = inversesqrt(max(max(dot(T, T), dot(B, B)), 1e-8));
+    return mat3(T * invmax, B * invmax, N);
+}
+
+// Roughness -> Blinn-Phong specular lobe (sharp+bright when smooth, broad+dim
+// when matte). Keeps the look continuous with the old fixed pow(...,32)*0.2.
+float specular(vec3 N, vec3 H, float roughness)
+{
+    if (uPbrEnabled == 0)
+        return pow(max(dot(N, H), 0.0), 32.0) * 0.2; // exact legacy lobe
+    float gloss = mix(96.0, 6.0, roughness);
+    float scale = mix(0.45, 0.04, roughness);
+    return pow(max(dot(N, H), 0.0), gloss) * scale;
 }
 
 void main()
 {
     vec3 N = normalize(normalF);
+    int  ti = int(texIndexF);
+    vec2 uv = texCoordF;
+
+    // Derived surface detail only applies to textured, lit surfaces.
+    bool usePbr = (uPbrEnabled != 0) && (uShadeMode == 0) && (ti > 0);
+    float roughness = clamp(uRoughness, 0.04, 1.0);
+    float ao = 1.0;
+
+    if (usePbr)
+    {
+        mat3 TBN = cotangentFrame(N, fragPos, uv);
+        vec3 V0 = normalize(uCameraPos - fragPos);
+        vec3 viewT = normalize(V0 * TBN); // world->tangent (TBN orthonormalish)
+        uv = parallaxUV(ti, uv, viewT);   // displacement
+
+        float h = heightAt(ti, uv);
+        N = perturbNormal(N, fragPos, h, uNormalStrength); // bump
+        ao = 1.0 - uAoStrength * (1.0 - h);                // cavity AO
+    }
 
     vec4 base;
     if (uShadeMode == 1)
         base = vec4(proceduralTerrain(fragPos, N), 1.0);
     else
-        base = sampleBase();
+        base = colorF * sampleAlbedo(ti, uv);
 
     if (uShadeMode == 2) // unlit (2D / HUD)
     {
@@ -170,7 +283,7 @@ void main()
     }
 
     vec3 V = normalize(uCameraPos - fragPos);
-    vec3 lighting = uAmbientColor * uAmbientIntensity;
+    vec3 lighting = uAmbientColor * uAmbientIntensity * ao;
 
     // Directional (sun) light + specular, attenuated by the shadow map.
     vec3 Ld = normalize(-uSunDir);
@@ -180,7 +293,7 @@ void main()
     if (sunDiff > 0.0)
     {
         vec3 H = normalize(Ld + V);
-        lighting += uSunColor * uSunIntensity * pow(max(dot(N, H), 0.0), 32.0) * 0.2 * shadow;
+        lighting += uSunColor * uSunIntensity * specular(N, H, roughness) * shadow;
     }
 
     // Point lights (already culled to the nearest few on the CPU).
@@ -200,7 +313,7 @@ void main()
         lighting += uPointColor[i] * uPointIntensity[i] * diff * att;
 
         vec3 H = normalize(L + V);
-        lighting += uPointColor[i] * uPointIntensity[i] * pow(max(dot(N, H), 0.0), 32.0) * att * 0.2;
+        lighting += uPointColor[i] * uPointIntensity[i] * specular(N, H, roughness) * att;
     }
 
     vec3 colorOut = base.rgb * lighting;

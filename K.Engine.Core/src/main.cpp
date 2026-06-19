@@ -1312,6 +1312,18 @@ namespace KDot
             ImGui::SliderFloat("AO bias", &m_Renderer.ssaoBias, 0.0f, 0.2f, "%.3f");
             ImGui::SliderFloat("AO intensity", &m_Renderer.ssaoIntensity, 0.0f, 2.0f, "%.2f");
             ImGui::Separator();
+            ImGui::TextUnformatted("Surface detail (PBR)");
+            ImGui::Checkbox("Bump / parallax", &m_Renderer.pbrEnabled);
+            ImGui::SliderFloat("Roughness", &m_Renderer.pbrRoughness, 0.04f, 1.0f, "%.2f");
+            ImGui::SliderFloat("Bump strength", &m_Renderer.pbrNormalStrength, 0.0f, 3.0f, "%.2f");
+            ImGui::SliderFloat("Displacement", &m_Renderer.pbrParallaxScale, 0.0f, 0.15f, "%.3f");
+            ImGui::SliderFloat("Cavity AO", &m_Renderer.pbrAoStrength, 0.0f, 1.0f, "%.2f");
+            {
+                const QualitySettings& q = QualitySettings::Get();
+                ImGui::TextDisabled("Fidelity gate: bump %s \xc2\xb7 parallax %d steps",
+                                    q.normalMapping ? "on" : "off", q.parallaxSteps);
+            }
+            ImGui::Separator();
             ImGui::TextUnformatted("Sun shadows (cascaded)");
             ImGui::Checkbox("Shadows##sun", &m_Renderer.shadowsEnabled);
             ImGui::SliderFloat("Bias", &m_Renderer.shadowBias, 0.0f, 0.01f, "%.4f");

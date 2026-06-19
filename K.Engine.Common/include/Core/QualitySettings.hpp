@@ -44,6 +44,9 @@ namespace KDot
         int   anisotropy            = 8;       // texture anisotropic filtering samples
         float textureLodBias        = -0.15f;  // negative == sharper sampling
         int   msaaSamples           = 4;       // 1 == off
+        // ---- PBR-style surface detail (normal / parallax / AO from textures) ---
+        bool  normalMapping         = true;    // derived bump + authored normal maps
+        int   parallaxSteps         = 16;      // displacement (POM) ray-march steps; 0 == off
 
         // ---- Master dial ----------------------------------------------------
         static QualitySettings& Get()
@@ -79,6 +82,12 @@ namespace KDot
             anisotropy     = SnapPow2(static_cast<int>(Lerp(1.0f, 16.0f, f)));
             textureLodBias = Lerp(0.5f, -0.5f, f);
             msaaSamples    = SnapPow2(static_cast<int>(Lerp(1.0f, 8.0f, f)));
+
+            // Derived bump is cheap (kept above Low); parallax/displacement is the
+            // expensive ray-march, so it only switches on past the mid tier and
+            // scales with fidelity. This is the "lock it behind a threshold" dial.
+            normalMapping  = f > 0.25f;
+            parallaxSteps  = (f > 0.35f) ? static_cast<int>(std::lround(Lerp(0.0f, 32.0f, f))) : 0;
         }
 
         // Convenience presets that map onto the same continuous dial.
