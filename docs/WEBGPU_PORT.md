@@ -50,13 +50,18 @@ sampled textures that the RHI doesn't expose.
    calls, pass by pass (scene → shadow atlas → bloom → SSAO → tonemap resolve).
    This is the bulk of the work and is **independently verifiable on the GL
    backend** before any WebGPU runs.
-   *In progress:* the **bloom** chain (bright-pass + separable blur) is ported —
-   it now runs through `rhi::Device` (RHI textures/render-targets/pipelines + a
-   `Post` uniform block) instead of raw GL. The bright-pass input still *borrows*
-   the GL scene colour texture via `TextureDesc::externalHandle`, and the tonemap
-   resolve reads the bloom result via `Texture::NativeHandle()`; both seams go away
-   once the scene target + SSAO + resolve are ported too. Next: SSAO, then the
-   tonemap resolve + scene render target (which removes both transitional seams).
+   *In progress (444 → ~250 `gl*` calls so far):* the entire **post chain** is
+   ported — the **offscreen scene target** (HDR colour + sampleable depth), **bloom**
+   (bright-pass + separable blur), **SSAO** (occlusion + blur), and the **tonemap
+   resolve** all run through `rhi::Device` (RHI textures/render-targets/pipelines +
+   std140 `Post`/`Ssao`/`Resolve` blocks). `BindFrameBuffer`/`UnbindFrameBuffer` are
+   now `BeginRenderPass`/`EndRenderPass` on the scene target; the scene itself is
+   still drawn into it by raw GL between those calls. The `externalHandle` borrow
+   seams are gone — the only remaining native-handle use is `GetFrameBufferTexture`
+   handing the resolved texture to `ImGui::Image`. **Still raw GL:** the scene draw
+   passes (`Flush`/`DrawMesh`/props), the shadow atlas, the 2D/HUD pass, and the
+   main scene shaders. Next: the shadow atlas, then the main scene draw + its shader
+   (which needs the per-frame lighting/material uniforms modelled as UBOs).
 3. **Translate every shader to WGSL.** Scene (`FragmentShader`/`VertexShader`),
    grass (done), and the post/tonemap/SSAO/shadow programs. Keep the GLSL set for
    the GL backend; pick per backend (or compile WGSL→GLSL/SPIR-V via Tint).

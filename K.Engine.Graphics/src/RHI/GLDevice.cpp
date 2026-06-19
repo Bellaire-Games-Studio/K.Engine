@@ -308,7 +308,8 @@ namespace KDot
                 if (m_Width == 0) { m_Width = d->Width(); m_Height = d->Height(); }
             }
 
-            if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+            m_Complete = (glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
+            if (!m_Complete)
                 std::cout << "RHI: render target framebuffer not complete" << std::endl;
 
             glBindFramebuffer(GL_FRAMEBUFFER, 0);

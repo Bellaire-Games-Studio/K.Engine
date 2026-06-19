@@ -49,6 +49,9 @@ namespace KDot
             virtual ~RenderTarget() = default;
             virtual uint32_t Width() const = 0;
             virtual uint32_t Height() const = 0;
+            // False if the backend could not make this target renderable (e.g. a
+            // float colour format that isn't supported) - used to fall back to 8-bit.
+            virtual bool Complete() const { return true; }
         };
 
         struct RenderPassDesc

@@ -65,6 +65,7 @@ namespace KDot
             ~GLRenderTarget() override;
             uint32_t Width() const override { return m_Width; }
             uint32_t Height() const override { return m_Height; }
+            bool Complete() const override { return m_Complete; }
 
             GLuint Fbo() const { return m_Fbo; }
 
@@ -72,6 +73,7 @@ namespace KDot
             GLuint   m_Fbo = 0;
             uint32_t m_Width = 0;
             uint32_t m_Height = 0;
+            bool     m_Complete = false;
         };
 
         class GLDevice : public Device

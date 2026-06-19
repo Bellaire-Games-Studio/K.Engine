@@ -19,11 +19,9 @@ namespace KDot
             glDeleteBuffers(1, &m_MeshVBO);
             glDeleteBuffers(1, &m_MeshIBO);
         }
-        // Tonemap-resolve and bloom resources are RHI objects and release their GL
-        // handles when the Renderer's unique_ptr members are destroyed.
-        if (m_DepthTex)         glDeleteTextures(1, &m_DepthTex);
-        // SSAO resources (m_Ssao*) are RHI objects and free themselves with the
-        // Renderer's unique_ptr members.
+        // The scene target, tonemap-resolve, bloom and SSAO resources are all RHI
+        // objects and release their GL handles when the Renderer's unique_ptr
+        // members are destroyed.
         for (auto &kv : m_MeshCache)
         {
             if (kv.second.vao) glDeleteVertexArrays(1, &kv.second.vao);
@@ -851,50 +849,46 @@ namespace KDot
     void Renderer::GenerateFrameBuffer()
     {
         const int W = 2560, H = 1440;
-        glViewport(0, 0, W, H);
+
+        if (!m_Rhi)
+            m_Rhi = rhi::CreateDevice();
+        if (!m_Rhi)
+            return;
 
 #if defined(KE_PLATFORM_WEB)
         // WebGL2 needs this extension enabled before a float texture is renderable.
         emscripten_webgl_enable_extension(emscripten_webgl_get_current_context(), "EXT_color_buffer_float");
 #endif
 
-        glGenFramebuffers(1, &m_FrameBuffer);
-        glBindFramebuffer(GL_FRAMEBUFFER, m_FrameBuffer);
-
-        glGenTextures(1, &m_Texture);
-        glBindTexture(GL_TEXTURE_2D, m_Texture);
-        // HDR (half-float) colour target so lighting can exceed 1.0 before tonemap.
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, W, H, 0, GL_RGBA, GL_HALF_FLOAT, NULL);
-        // Sampled 1:1 by the resolve pass, so nearest avoids any float-filter dependency.
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_Texture, 0);
-
         // Depth as a sampleable texture (SSAO reads it) rather than a renderbuffer.
-        glGenTextures(1, &m_DepthTex);
-        glBindTexture(GL_TEXTURE_2D, m_DepthTex);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT24, W, H, 0, GL_DEPTH_COMPONENT, GL_UNSIGNED_INT, NULL);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, m_DepthTex, 0);
+        rhi::TextureDesc dd;
+        dd.width = W; dd.height = H;
+        dd.format = rhi::TextureFormat::Depth24;
+        dd.filter = rhi::TextureFilter::Nearest;
+        dd.wrap   = rhi::TextureWrap::ClampToEdge;
+        m_SceneDepth = m_Rhi->CreateTexture(dd);
 
-        m_HdrEnabled = (glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE);
+        // (Re)build the scene colour target + framebuffer at a given colour format.
+        auto buildScene = [&](rhi::TextureFormat colorFormat) {
+            rhi::TextureDesc cd;
+            cd.width = W; cd.height = H;
+            cd.format = colorFormat;
+            cd.filter = rhi::TextureFilter::Nearest; // sampled 1:1 by the resolve pass
+            cd.wrap   = rhi::TextureWrap::ClampToEdge;
+            m_SceneColor = m_Rhi->CreateTexture(cd);
+
+            rhi::RenderTargetDesc rtd;
+            rtd.colors = {m_SceneColor.get()};
+            rtd.depth  = m_SceneDepth.get();
+            m_SceneRT = m_Rhi->CreateRenderTarget(rtd);
+        };
+
+        // Prefer an HDR (half-float) colour target so lighting can exceed 1.0 before
+        // tonemap; fall back to 8-bit where a float target isn't renderable.
+        buildScene(rhi::TextureFormat::RGBA16F);
+        m_HdrEnabled = m_SceneRT && m_SceneRT->Complete();
         if (!m_HdrEnabled)
-        {
-            // Float target not renderable here: fall back to 8-bit (tonemap still runs).
-            glBindTexture(GL_TEXTURE_2D, m_Texture);
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, W, H, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-            if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
-                std::cout << "Framebuffer not complete" << std::endl;
-        }
-
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        glBindTexture(GL_TEXTURE_2D, 0);
-        glBindRenderbuffer(GL_RENDERBUFFER, 0);
+            buildScene(rhi::TextureFormat::RGBA8);
 
         BuildTonemapResources(W, H);
         BuildSsaoResources(W / 2, H / 2); // SSAO runs at half resolution
@@ -920,12 +914,6 @@ namespace KDot
         rhi::RenderTargetDesc rtd;
         rtd.colors = {m_ResolveTex.get()};
         m_ResolveRT = m_Rhi->CreateRenderTarget(rtd);
-
-        // Borrow the scene colour texture as the HDR input (until the scene target
-        // is ported to the RHI).
-        rhi::TextureDesc sceneDesc;
-        sceneDesc.externalHandle = m_Texture;
-        m_ResolveSceneTex = m_Rhi->CreateTexture(sceneDesc);
 
         m_ResolveUbo = m_Rhi->CreateBuffer(rhi::BufferType::Uniform, sizeof(glm::vec4), nullptr, true);
 
@@ -971,12 +959,6 @@ namespace KDot
         makeTarget(m_BlurTex[0], m_BlurRT[0]);
         makeTarget(m_BlurTex[1], m_BlurRT[1]);
 
-        // Borrow the scene colour texture (still owned by the GL scene FBO) as the
-        // bright-pass input until the scene target itself moves onto the RHI.
-        rhi::TextureDesc sceneDesc;
-        sceneDesc.externalHandle = m_Texture;
-        m_BloomSceneTex = m_Rhi->CreateTexture(sceneDesc);
-
         // Per-pass "Post" constants (one vec4); see the bloom shaders above.
         m_PostUbo = m_Rhi->CreateBuffer(rhi::BufferType::Uniform, sizeof(glm::vec4), nullptr, true);
 
@@ -999,7 +981,7 @@ namespace KDot
     // holding the final bloom (or nullptr if bloom can't run this frame).
     rhi::Texture* Renderer::RenderBloom()
     {
-        if (!bloomEnabled || !m_Rhi || !m_BloomSceneTex ||
+        if (!bloomEnabled || !m_Rhi || !m_SceneColor ||
             !m_BrightPipe || !m_BrightPipe->Valid() ||
             !m_BlurPipe || !m_BlurPipe->Valid())
             return nullptr;
@@ -1020,7 +1002,7 @@ namespace KDot
         };
 
         // 1) Bright-pass scene -> m_BrightTex.
-        pass(m_BrightRT.get(), *m_BrightPipe, *m_BloomSceneTex,
+        pass(m_BrightRT.get(), *m_BrightPipe, *m_SceneColor,
              glm::vec4(texel.x, texel.y, 0.0f, bloomThreshold));
 
         // 2) Separable blur, ping-ponging between the two blur targets.
@@ -1065,16 +1047,6 @@ namespace KDot
         makeTarget(m_SsaoTex, m_SsaoRT);
         makeTarget(m_SsaoBlurTex, m_SsaoBlurRT);
 
-        // Borrow the GL scene depth texture as the occlusion input (only when it
-        // exists; a 0 handle would otherwise allocate a fresh texture). RenderSSAO
-        // bails out when m_SsaoDepthTex is null, matching the old m_DepthTex==0 guard.
-        if (m_DepthTex != 0)
-        {
-            rhi::TextureDesc depthDesc;
-            depthDesc.externalHandle = m_DepthTex;
-            m_SsaoDepthTex = m_Rhi->CreateTexture(depthDesc);
-        }
-
         // "Ssao" block: proj + invProj (mat4) + params (radius, bias, intensity).
         m_SsaoUbo = m_Rhi->CreateBuffer(rhi::BufferType::Uniform, 2 * sizeof(glm::mat4) + sizeof(glm::vec4),
                                         nullptr, true);
@@ -1102,7 +1074,7 @@ namespace KDot
     // AO texture (or nullptr if SSAO is off / unavailable).
     rhi::Texture* Renderer::RenderSSAO()
     {
-        if (!ssaoEnabled || !m_Rhi || !m_SsaoDepthTex ||
+        if (!ssaoEnabled || !m_Rhi || !m_SceneDepth ||
             !m_SsaoPipe || !m_SsaoPipe->Valid() ||
             !m_SsaoBlurPipe || !m_SsaoBlurPipe->Valid())
             return nullptr;
@@ -1117,7 +1089,7 @@ namespace KDot
         // 1) Occlusion -> m_SsaoTex.
         m_Rhi->BeginRenderPass(m_SsaoRT.get());
         m_Rhi->BindPipeline(*m_SsaoPipe);
-        m_Rhi->BindTexture(0, *m_SsaoDepthTex);
+        m_Rhi->BindTexture(0, *m_SceneDepth);
         m_SsaoUbo->Update(&c, sizeof(c));
         m_Rhi->BindUniformBuffer(0, *m_SsaoUbo);
         m_Rhi->Draw(3);
@@ -1138,7 +1110,7 @@ namespace KDot
 
     void Renderer::ResolveToneMap()
     {
-        if (!m_Rhi || !m_ResolveSceneTex || !m_ResolvePipe || !m_ResolvePipe->Valid())
+        if (!m_Rhi || !m_SceneColor || !m_ResolvePipe || !m_ResolvePipe->Valid())
             return; // fall back to displaying the raw scene texture
 
         // Bloom + SSAO first (each writes its own targets), then the final resolve.
@@ -1148,14 +1120,14 @@ namespace KDot
         const float aoEnabled = aoTex ? 1.0f : 0.0f;
 
         // Bind a valid texture to every sampler even when a pass is off.
-        rhi::Texture& bloomBind = bloomTex ? *bloomTex : *m_ResolveSceneTex;
-        rhi::Texture& aoBind    = aoTex ? *aoTex : *m_ResolveSceneTex;
+        rhi::Texture& bloomBind = bloomTex ? *bloomTex : *m_SceneColor;
+        rhi::Texture& aoBind    = aoTex ? *aoTex : *m_SceneColor;
 
         const glm::vec4 params(tonemapExposure, bloomAmount, aoEnabled, (float)tonemapMode);
 
         m_Rhi->BeginRenderPass(m_ResolveRT.get());
         m_Rhi->BindPipeline(*m_ResolvePipe);
-        m_Rhi->BindTexture(0, *m_ResolveSceneTex);
+        m_Rhi->BindTexture(0, *m_SceneColor);
         m_Rhi->BindTexture(1, bloomBind);
         m_Rhi->BindTexture(2, aoBind);
         m_ResolveUbo->Update(&params, sizeof(params));
@@ -1313,47 +1285,19 @@ namespace KDot
     }
     void Renderer::BindFrameBuffer()
     {
-        glBindFramebuffer(GL_FRAMEBUFFER, m_FrameBuffer);
+        if (m_Rhi && m_SceneRT)
+            m_Rhi->BeginRenderPass(m_SceneRT.get()); // binds the FBO + sets the viewport
     }
     void Renderer::UnbindFrameBuffer()
     {
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        if (m_Rhi)
+            m_Rhi->EndRenderPass();
     }
-    void Renderer::RescaleFrameBuffer(int width, int height)
+    void Renderer::RescaleFrameBuffer(int /*width*/, int /*height*/)
     {
-        if (width == 0 || height == 0)
-        {
-            return;
-        }
-        
-        //TODO: Get virutal aspect ratio from user
-        int virtualWidth = 2560;
-        int virtualHeight = 1440;
-
-        float targetAspectRatio = (float)virtualWidth / (float)virtualHeight;
-        int newWidth = width;
-        int newHeight = (int)(float(newWidth) / targetAspectRatio + 0.5f);
-        if (newHeight > height)
-        {
-            newHeight = height;
-            newWidth = (int)(float(newHeight) * targetAspectRatio + 0.5f);
-        }
-
-        float fbWidth = float(newWidth) / float(width);
-        float fbHeight = float(newHeight) / float(height);
-        BindFrameBuffer();
-        glBindTexture(GL_TEXTURE_2D, m_Texture);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, virtualWidth, virtualHeight, 0, GL_RGB, GL_UNSIGNED_BYTE, NULL);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_Texture, 0);
-
-        glBindRenderbuffer(GL_RENDERBUFFER, m_RenderBuffer);
-        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, virtualWidth, virtualHeight);
-        glBindRenderbuffer(GL_RENDERBUFFER, 0);
-        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, m_RenderBuffer);
-        UnbindFrameBuffer();
-        glBindTexture(GL_TEXTURE_2D, 0);
+        // No-op: the scene target is a fixed virtual resolution (2560x1440) and the
+        // editor scales the resolved texture to fit its viewport panel. Kept for API
+        // compatibility; never called in the current frame loop.
     }
 
     void Renderer::BindTextures()

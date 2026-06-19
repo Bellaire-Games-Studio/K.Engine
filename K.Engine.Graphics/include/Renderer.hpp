@@ -98,9 +98,9 @@ namespace KDot
         // scene texture if the tonemap pipeline failed to build).
         GLuint GetFrameBufferTexture()
         {
-            return (m_ResolvePipe && m_ResolvePipe->Valid())
-                       ? (GLuint)m_ResolveTex->NativeHandle()
-                       : m_Texture;
+            if (m_ResolvePipe && m_ResolvePipe->Valid())
+                return (GLuint)m_ResolveTex->NativeHandle();
+            return m_SceneColor ? (GLuint)m_SceneColor->NativeHandle() : 0;
         }
         void LoadTexture(const char *path);
         // Load an image file as a sampled texture; returns a 1-based slot to put on
@@ -196,29 +196,27 @@ namespace KDot
         int       m_ShadeMode = 0;
         glm::vec3 m_CameraWorldPos = glm::vec3(0.0f);
         GLuint m_ShaderProgram;
-        GLuint m_FrameBuffer;
         GLuint m_VertexArray;
         GLuint m_VertexBuffer;
         GLuint m_RenderBuffer;
-        GLuint m_Texture; // scene colour attachment (HDR RGBA16F when supported)
-        GLuint m_DepthTex = 0; // scene depth, as a sampleable texture (for SSAO)
-        // HDR -> LDR tonemap resolve, ported to the RHI. m_ResolveSceneTex borrows
-        // the scene colour texture (m_Texture) until the scene target is ported.
+        // Offscreen scene target (RHI). The scene is still drawn into it by raw GL
+        // between BindFrameBuffer/UnbindFrameBuffer; the post chain samples these.
+        std::unique_ptr<rhi::Texture>      m_SceneColor; // HDR RGBA16F when supported
+        std::unique_ptr<rhi::Texture>      m_SceneDepth; // sampleable depth (SSAO)
+        std::unique_ptr<rhi::RenderTarget> m_SceneRT;
+        // HDR -> LDR tonemap resolve, ported to the RHI.
         std::unique_ptr<rhi::Texture>      m_ResolveTex;
         std::unique_ptr<rhi::RenderTarget> m_ResolveRT;
         std::unique_ptr<rhi::Pipeline>     m_ResolvePipe;
         std::unique_ptr<rhi::Buffer>       m_ResolveUbo; // "Resolve" block
-        std::unique_ptr<rhi::Texture>      m_ResolveSceneTex;
         bool   m_HdrEnabled = false;
         void   BuildTonemapResources(int width, int height);
         // RHI device used by the passes that have been ported off raw GL (the post
         // chain today; the rest of the renderer migrates onto it over time).
         std::unique_ptr<rhi::Device> m_Rhi;
         // Bloom (bright-pass + separable blur on a half-res HDR chain) - ported to
-        // the RHI. m_BloomSceneTex borrows the scene colour texture (m_Texture)
-        // until the scene target is itself moved onto the RHI.
+        // the RHI; reads the scene colour target directly.
         int    m_BloomW = 0, m_BloomH = 0;
-        std::unique_ptr<rhi::Texture>      m_BloomSceneTex;
         std::unique_ptr<rhi::Texture>      m_BrightTex;
         std::unique_ptr<rhi::Texture>      m_BlurTex[2];
         std::unique_ptr<rhi::RenderTarget> m_BrightRT;
@@ -230,10 +228,8 @@ namespace KDot
         rhi::Texture* RenderBloom(); // final blurred bloom texture (nullptr if off)
 
         // SSAO: half-res occlusion from the scene depth texture, then a box blur -
-        // ported to the RHI. m_SsaoDepthTex borrows the GL scene depth texture
-        // (m_DepthTex) until the scene target moves onto the RHI.
+        // ported to the RHI; reads the scene depth target directly.
         int    m_SsaoW = 0, m_SsaoH = 0;
-        std::unique_ptr<rhi::Texture>      m_SsaoDepthTex;
         std::unique_ptr<rhi::Texture>      m_SsaoTex;
         std::unique_ptr<rhi::Texture>      m_SsaoBlurTex;
         std::unique_ptr<rhi::RenderTarget> m_SsaoRT;
